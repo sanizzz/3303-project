@@ -1,0 +1,168 @@
+@startuml
+left to right direction
+skinparam classAttributeIconSize 0
+
+package "Application" {
+  class Main {
+    +{static} TIME_SCALE : int
+    +{static} main(args : String[]) : void
+  }
+}
+
+package "Subsystems" {
+  class "Scheduler.Scheduler" as Scheduler {
+    -state : SchedulerState
+    -missionQueue : LinkedList<Mission>
+    -inProgressByMissionId : Map<Integer, Mission>
+    -dispatchQueue : LinkedList<DispatchCommand>
+    +putRequest(req : FireRequest) : void
+    +getDispatchCommandForDrone(droneId : int) : DispatchCommand
+    +getNextDispatchCommand() : DispatchCommand
+    +sendDroneStatusUpdate(update : DroneStatusUpdate) : void
+    +getCompletion() : FireRequest
+    +getActiveFires() : int
+    +run() : void
+  }
+
+  class "fire_incident_subsystem.FireIncidentSubsystem" as FireIncidentSubsystem {
+    -scheduler : Scheduler
+    -csvFile : String
+    -timeScale : int
+    -useUdp : boolean
+    +setCsvFile(filename : String) : void
+    +run() : void
+  }
+
+  class "Drone_subsystem.DroneSubsystem" as DroneSubsystem {
+    -droneId : int
+    -scheduler : Scheduler
+    -drone : Drone
+    -zoneMap : Map<Integer, Zone>
+    -timeScale : int
+    +run() : void
+  }
+}
+
+package "Domain" {
+  class "fire_incident_subsystem.FireRequest" as FireRequest {
+    -time : LocalTime
+    -zoneId : int
+    -type : EventType
+    -severity : Severity
+    -requiredFoam : double
+    -isResolved : boolean
+    -inProgress : boolean
+    +updateRequiredFoam(amount : double) : void
+  }
+
+  class "Drone_subsystem.Drone" as Drone {
+    +configure(loadCapacity : double, speed : int, battery : double, dropTime : double) : void
+    +resetDefaults() : void
+    +useAgent(amount : double) : double
+    +useBattery(seconds : double) : double
+    +travelTimeTo(x : double, y : double) : double
+    +travelTimeToHome() : double
+    +refill() : void
+  }
+
+  class "Drone_subsystem.Zone" as Zone {
+    +{static} loadZones(filename : String) : Map<Integer, Zone>
+    +getMiddleX() : int
+    +getMiddleY() : int
+    +setZoneState(state : ZoneState) : void
+  }
+}
+
+package "Types" {
+  enum DroneState {
+    IDLE
+    EN_ROUTE
+    DROPPING_AGENT
+    RETURNING
+  }
+
+  enum SchedulerState {
+    IDLE
+    WAITING_FOR_DRONE
+    DISPATCHING
+  }
+
+  enum MissionStatus {
+    QUEUED
+    IN_PROGRESS
+    COMPLETED
+  }
+
+  enum Severity {
+    LOW
+    MODERATE
+    HIGH
+  }
+
+  enum EventType {
+    FIRE_DETECTED
+    DRONE_REQUEST
+  }
+
+  class Mission {
+    -missionId : int
+    -fireRequest : FireRequest
+    -status : MissionStatus
+  }
+
+  class DispatchCommand {
+    -targetDroneId : Integer
+    -mission : Mission
+    -returnToBase : boolean
+  }
+
+  class DroneStatusUpdate {
+    -droneId : int
+    -droneState : DroneState
+    -missionId : int
+    -remainingAgent : double
+    -remainingBattery : double
+    -message : String
+  }
+
+  class UdpUtil
+  class UdpConfig
+}
+
+package "Launchers (UDP mode)" {
+  class "Scheduler.SchedulerMain" as SchedulerMain
+  class "Drone_subsystem.DroneSubsystemMain" as DroneSubsystemMain
+  class "fire_incident_subsystem.FireIncidentSubsystemMain" as FireIncidentSubsystemMain
+}
+
+package "GUI" {
+  class "gui.SimulationGUI" as SimulationGUI {
+    +setDroneState(state : String) : void
+    +setActiveFires(count : int) : void
+    +log(message : String) : void
+  }
+}
+
+Main ..> Scheduler : creates
+Main ..> FireIncidentSubsystem : creates
+Main ..> DroneSubsystem : creates N
+Main ..> SimulationGUI : creates
+Main ..> Zone : loadZones()
+
+FireIncidentSubsystem --> Scheduler : putRequest/getCompletion
+Scheduler --> DispatchCommand
+DispatchCommand --> Mission
+Mission --> FireRequest
+Scheduler --> DroneStatusUpdate
+DroneSubsystem --> Scheduler : getDispatchCommandForDrone/sendDroneStatusUpdate
+DroneSubsystem --> Drone
+DroneSubsystem --> Zone
+Scheduler --> Zone
+Scheduler --> SimulationGUI
+FireIncidentSubsystem --> UdpUtil
+SchedulerMain --> Scheduler
+SchedulerMain --> UdpUtil
+DroneSubsystemMain --> UdpUtil
+FireIncidentSubsystemMain --> FireIncidentSubsystem
+
+@enduml

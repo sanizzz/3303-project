@@ -1,0 +1,49 @@
+@startuml
+autonumber
+hide footbox
+
+participant FireIncidentSubsystem as Fire
+participant Scheduler
+participant DroneSubsystem as Drone
+
+== Incident Input ==
+Fire -> Scheduler : putRequest(FireRequest)
+activate Scheduler
+Scheduler -> Scheduler : enqueueMission()
+Scheduler -> Scheduler : dispatchNextIfPossible()
+Scheduler --> Drone : DispatchCommand(DISPATCH, mission)
+deactivate Scheduler
+
+== Mission Execution ==
+activate Drone
+Drone -> Scheduler : sendDroneStatusUpdate(EN_ROUTE)
+activate Scheduler
+Scheduler -> Scheduler : handleDroneStatusUpdate()
+deactivate Scheduler
+
+Drone -> Scheduler : sendDroneStatusUpdate(DROPPING_AGENT)\n(arrival notification)
+activate Scheduler
+Scheduler -> Scheduler : update drone position at zone
+deactivate Scheduler
+
+loop until fire requiredFoam == 0
+  Drone -> Drone : drop agent
+  alt tank empty and fire still active
+    Drone -> Scheduler : sendDroneStatusUpdate(IDLE)\n(refilled at base)
+    activate Scheduler
+    Scheduler -> Scheduler : makeSchedulingDecision()
+    deactivate Scheduler
+  end
+end
+
+Drone -> Scheduler : sendDroneStatusUpdate(IDLE)\n(mission complete)
+deactivate Drone
+activate Scheduler
+Scheduler -> Scheduler : mark mission completed
+Scheduler --> Fire : completion acknowledgment
+Scheduler -> Scheduler : queue empty?\nif yes send RETURN_TO_BASE command
+deactivate Scheduler
+
+Fire -> Scheduler : getCompletion()
+
+@enduml

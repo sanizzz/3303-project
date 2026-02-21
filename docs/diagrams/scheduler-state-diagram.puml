@@ -1,0 +1,15 @@
+@startuml
+title Scheduler State Machine (Iteration 2)
+
+[*] --> IDLE
+
+IDLE --> DISPATCHING : NEW_FIRE
+DISPATCHING --> WAITING_FOR_DRONE : DISPATCH_SENT
+
+WAITING_FOR_DRONE --> DISPATCHING : DRONE_IDLE + queue_non_empty + feasible
+WAITING_FOR_DRONE --> IDLE : QUEUE_EMPTY
+WAITING_FOR_DRONE --> IDLE : RETURN_TO_BASE
+
+IDLE --> WAITING_FOR_DRONE : NEW_FIRE while drones busy
+
+@enduml
