@@ -42,6 +42,21 @@ Architecture requirements in the specification include:
 - Refill/recharge at base is treated as instantaneous.
 - The system assumes one active fire per zone at a time.
 
+## Iteration 2 Requirement 
+
+- R1: Single-drone operation.
+- R2: Scheduler accepts fire requests and dispatches missions.
+- R3: Drone arrival and status transitions are reported to Scheduler.
+- R4: Scheduler decisions use remaining battery and agent.
+- R5: Scheduler decides continue-next-mission vs return-to-base.
+- R6: Refill/recharge at base is instantaneous.
+- R7: One active fire per zone at a time.
+- R8: GUI tracking includes drone state and active fire count.
+
+## Iteration 2 Test Cases and Requirement Coverage
+
+Test class: `tests/java/Iteration2SpecificationTest.java`
+
 ## State Machines Required
 
 Iteration 2 deliverables require:
@@ -74,7 +89,6 @@ For Iteration 2, the GUI must:
 
 ### Prerequisites
 
-- Windows with PowerShell
 - JDK 11 or newer (`java` and `javac` on `PATH`)
 
 ### 1. Open project folder
