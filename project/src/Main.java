@@ -11,7 +11,7 @@ import java.util.Arrays;
 import java.util.Map;
 
 public class Main {
-    public static final int TIME_SCALE = 50;
+    public static final int TIME_SCALE = 20;
 
     public static void main(String[] args) {
         System.out.println("[System] DEMO MODE ENABLED: Speed x" + TIME_SCALE);
@@ -89,3 +89,4 @@ public class Main {
         throw new IllegalStateException("Unable to find required input file. Tried: " + Arrays.toString(candidates));
     }
 }
+

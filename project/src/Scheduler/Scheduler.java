@@ -218,16 +218,26 @@ public class Scheduler implements Runnable {
 
         Mission mission = inProgressByMissionId.get(update.getMissionId());
         if (update.getDroneState() == DroneState.DROPPING_AGENT && mission != null) {
-            Zone z = zoneMap != null ? zoneMap.get(mission.getZoneId()) : null;
-            if (z != null) {
-                dronePosXById.put(droneId, (double) z.getMiddleX());
-                dronePosYById.put(droneId, (double) z.getMiddleY());
+            if (isArrivalUpdate(update)) {
+                Zone z = zoneMap != null ? zoneMap.get(mission.getZoneId()) : null;
+                if (z != null) {
+                    dronePosXById.put(droneId, (double) z.getMiddleX());
+                    dronePosYById.put(droneId, (double) z.getMiddleY());
+                }
+                log("[Scheduler] Drone " + droneId + " arrived at Zone " + mission.getZoneId() + ".");
             }
-            log("[Scheduler] Drone " + droneId + " arrived at Zone " + mission.getZoneId() + ".");
         } else if (update.getDroneState() == DroneState.IDLE) {
             if (mission != null) {
-                completeMission(droneId, mission);
-                makeSchedulingDecision(droneId);
+                if (isMissionCompletionUpdate(update)) {
+                    completeMission(droneId, mission);
+                    makeSchedulingDecision(droneId);
+                } else {
+                    // Drone may report IDLE at base while refilling mid-mission.
+                    // Keep it reserved to the active mission so queued work is not dispatched early.
+                    droneStateById.put(droneId, DroneState.EN_ROUTE);
+                    log("[Scheduler] Drone " + droneId + " refilled and continuing Mission "
+                            + mission.getMissionId() + ".");
+                }
             } else {
                 // Returned to base without mission completion
                 droneAgentById.put(droneId, Drone.getLoadCapacity());
@@ -245,6 +255,25 @@ public class Scheduler implements Runnable {
         }
 
         updateGui();
+    }
+
+    private boolean isMissionCompletionUpdate(DroneStatusUpdate update) {
+        String msg = update.getMessage();
+        if (msg == null) {
+            return false;
+        }
+        String normalized = msg.trim().toLowerCase();
+        return "complete".equals(normalized)
+                || normalized.startsWith("mission complete")
+                || normalized.contains("fire extinguished");
+    }
+
+    private boolean isArrivalUpdate(DroneStatusUpdate update) {
+        String msg = update.getMessage();
+        if (msg == null) {
+            return false;
+        }
+        return msg.trim().toLowerCase().startsWith("arrived");
     }
 
     private void completeMission(int droneId, Mission mission) {
@@ -304,8 +333,28 @@ public class Scheduler implements Runnable {
     }
 
     private void sendReturnToBase(Integer targetDroneId) {
+        if (targetDroneId != null) {
+            DroneState current = droneStateById.getOrDefault(targetDroneId, DroneState.IDLE);
+            if (current == DroneState.RETURNING) {
+                return;
+            }
+        }
+
+        for (DispatchCommand queued : dispatchQueue) {
+            if (queued.isReturnToBase() && sameTargetDrone(queued.getTargetDroneId(), targetDroneId)) {
+                return;
+            }
+        }
+
         dispatchQueue.add(DispatchCommand.returnToBase(targetDroneId));
+        if (targetDroneId != null) {
+            droneStateById.put(targetDroneId, DroneState.RETURNING);
+        }
         notifyAll();
+    }
+
+    private boolean sameTargetDrone(Integer a, Integer b) {
+        return (a == null && b == null) || (a != null && a.equals(b));
     }
 
     private boolean hasBatteryForMission(Mission mission, int droneId) {
