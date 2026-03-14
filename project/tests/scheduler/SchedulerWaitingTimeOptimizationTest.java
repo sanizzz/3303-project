@@ -11,10 +11,9 @@ class SchedulerWaitingTimeOptimizationTest extends SchedulerTestSupport {
 
     @Test
     void givesNextMissionToDroneThatCanReachItSoonerAfterCompletingCurrentWork() {
-        // Requirement under test:
-        // The scheduler should minimize waiting time.
-        // After Drone 1 completes a nearby mission, it should be chosen for the next nearby fire
-        // instead of an idle drone sitting farther away at base.
+        // Waiting-time rule under test:
+        // after Drone 1 finishes a nearby mission, it should receive the next nearby fire
+        // instead of leaving that work to a farther idle drone at base.
         Scheduler scheduler = startScheduler(new Scheduler(null, buildNominalZones(), 2));
 
         scheduler.putRequest(request(1, Severity.MODERATE, 0));
@@ -55,9 +54,9 @@ class SchedulerWaitingTimeOptimizationTest extends SchedulerTestSupport {
 
     @Test
     void prefersOlderRequestWhenSeverityAndTravelTimeAreEffectivelyEqual() {
-        // Tie-break policy under test:
-        // if two waiting requests have the same severity and no meaningful ETA advantage,
-        // the older request should go first so waiting time is fair.
+        // Fairness tie-break under test:
+        // if two waiting requests have the same severity and no meaningful ETA difference,
+        // the older request should be served first.
         Scheduler scheduler = new Scheduler(null, buildEqualDistanceZones(), 1);
         scheduler.putRequest(request(1, Severity.MODERATE, 0));
         scheduler.putRequest(request(2, Severity.MODERATE, 5));

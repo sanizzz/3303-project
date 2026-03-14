@@ -87,14 +87,16 @@ java -cp "bin;lib\commons-lang3-3.20.0.jar;lib\opencsv-5.12.0.jar" fire_incident
 
 The Iteration 3 tests live in:
 
-- `tests/SchedulerDispatchPriorityTest.java`
-- `tests/SchedulerReroutePolicyTest.java`
-- `tests/SchedulerWaitingTimeOptimizationTest.java`
-- `tests/SchedulerResourceDecisionTest.java`
-- `tests/SchedulerGuiCompatibilityTest.java`
-- `tests/DroneLifecycleStateTest.java`
-- `tests/DroneSubsystemIntegrationTest.java`
-- `tests/UdpSupportTest.java`
+- `tests/scheduler/SchedulerDispatchPriorityTest.java`
+- `tests/scheduler/SchedulerReroutePolicyTest.java`
+- `tests/scheduler/SchedulerWaitingTimeOptimizationTest.java`
+- `tests/scheduler/SchedulerResourceDecisionTest.java`
+- `tests/scheduler/SchedulerGuiCompatibilityTest.java`
+- `tests/drone_subsystem/DroneLifecycleStateTest.java`
+- `tests/drone_subsystem/DroneSubsystemIntegrationTest.java`
+- `tests/fire_incident_subsystem/FireIncidentSubsystemTest.java`
+- `tests/udp/UdpSupportTest.java`
+- `tests/support/SchedulerTestSupport.java` helper for scheduler-facing tests
 
 To run them, place `junit-platform-console-standalone-1.10.2.jar` in `lib/`, then use:
 
@@ -102,7 +104,7 @@ To run them, place `junit-platform-console-standalone-1.10.2.jar` in `lib/`, the
 $sources = Get-ChildItem -Recurse -Path src -Filter *.java | Select-Object -ExpandProperty FullName
 javac -cp "lib\commons-lang3-3.20.0.jar;lib\opencsv-5.12.0.jar" -d bin $sources
 
-$testSources = Get-ChildItem -Path tests\java -Filter *.java | Select-Object -ExpandProperty FullName
+$testSources = Get-ChildItem -Recurse -Path tests -Filter *.java | Select-Object -ExpandProperty FullName
 javac -cp "bin;lib\commons-lang3-3.20.0.jar;lib\opencsv-5.12.0.jar;lib\junit-platform-console-standalone-1.10.2.jar" -d test-bin $testSources
 
 java -jar "lib\junit-platform-console-standalone-1.10.2.jar" --class-path "bin;test-bin;lib\commons-lang3-3.20.0.jar;lib\opencsv-5.12.0.jar" --scan-class-path
@@ -114,3 +116,4 @@ java -jar "lib\junit-platform-console-standalone-1.10.2.jar" --class-path "bin;t
 - `sampleData/test_mixed_scenario.csv` to show queueing and scheduler decisions over time
 - `SchedulerReroutePolicyTest.reroutesDroneToHigherSeverityFireWhileAlreadyEnRoute` for the TA's redirect-to-higher-priority scenario
 - `SchedulerReroutePolicyTest.reroutesDroneToSameSeverityFireThatAppearsEarlierOnItsPath` for the TA's same-severity on-path hint
+- `FireIncidentSubsystemTest.sendsUdpFireRequestsAndWaitsForAllCompletionAcknowledgements` to show the fire subsystem's UDP request/completion behavior

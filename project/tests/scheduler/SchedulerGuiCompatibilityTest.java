@@ -12,8 +12,8 @@ class SchedulerGuiCompatibilityTest extends SchedulerTestSupport {
     @Test
     void exposesDroneStateAndActiveFireCountNeededByGui() {
         // GUI compatibility under test:
-        // the GUI reads scheduler state through getDroneState() and getActiveFires().
-        // Those values should still reflect real Iteration 3 activity.
+        // the GUI still reads scheduler state through getDroneState() and getActiveFires(),
+        // so those values must continue to reflect real Iteration 3 mission progress.
         Scheduler scheduler = startScheduler(new Scheduler(null, buildNominalZones(), 1));
         scheduler.putRequest(request(1, Severity.MODERATE, 0));
 

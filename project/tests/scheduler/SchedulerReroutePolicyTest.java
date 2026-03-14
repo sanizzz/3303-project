@@ -13,9 +13,9 @@ class SchedulerReroutePolicyTest extends SchedulerTestSupport {
 
     @Test
     void reroutesDroneToHigherSeverityFireWhileAlreadyEnRoute() {
-        // Requirement under test:
-        // If a drone is already travelling to a lower-priority mission and a higher-priority fire appears,
-        // the scheduler should redirect that drone to the higher-priority fire instead of keeping the old plan.
+        // TA scenario under test:
+        // once a drone is travelling to a lower-priority zone, a newly reported higher-priority
+        // fire should cause a reroute instead of forcing the drone to finish the old trip first.
         Scheduler scheduler = startScheduler(new Scheduler(null, buildNominalZones(), 1));
         scheduler.putRequest(request(1, Severity.LOW, 0));
 
@@ -43,8 +43,8 @@ class SchedulerReroutePolicyTest extends SchedulerTestSupport {
     @Test
     void reroutesDroneToSameSeverityFireThatAppearsEarlierOnItsPath() {
         // TA hint under test:
-        // If the new fire has the same severity and lies earlier on the current route,
-        // the scheduler should let the drone service the earlier zone first.
+        // if the new fire has the same severity but lies earlier on the current route,
+        // the scheduler should let the drone service that earlier zone first.
         Scheduler scheduler = startScheduler(new Scheduler(null, buildLineZones(), 1));
         scheduler.putRequest(request(3, Severity.HIGH, 0));
 

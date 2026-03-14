@@ -14,8 +14,9 @@ class SchedulerDispatchPriorityTest extends SchedulerTestSupport {
 
     @Test
     void distributesConcurrentMissionsAcrossMultipleDrones() {
-        // Two equivalent requests should be split across the two available drones instead of serializing everything
-        // onto Drone 1.
+        // Load-balancing rule under test:
+        // two equivalent waiting fires should be split across available drones instead of
+        // serializing both missions onto Drone 1.
         Scheduler scheduler = startScheduler(new Scheduler(null, buildNominalZones(), 2));
         scheduler.putRequest(request(1, Severity.MODERATE, 0));
         scheduler.putRequest(request(2, Severity.MODERATE, 1));
@@ -36,9 +37,9 @@ class SchedulerDispatchPriorityTest extends SchedulerTestSupport {
 
     @Test
     void prioritizesHigherSeverityWhenMultipleRequestsAreWaiting() {
-        // This is the explicit priority rule the TA is expecting:
-        // if a LOW request and a HIGH request are both waiting when dispatch occurs,
-        // the Scheduler must send the HIGH mission first.
+        // Priority rule under test:
+        // if a LOW request and a HIGH request are both waiting when dispatch happens,
+        // the scheduler must dispatch the HIGH mission first.
         Scheduler scheduler = new Scheduler(null, buildNominalZones(), 1);
         scheduler.putRequest(request(1, Severity.LOW, 0));
         scheduler.putRequest(request(2, Severity.HIGH, 1));
@@ -51,7 +52,9 @@ class SchedulerDispatchPriorityTest extends SchedulerTestSupport {
 
     @Test
     void recordsDroneLocationsFromStatusUpdates() {
-        // The Scheduler must track drone location because Iteration 3 routing decisions depend on it.
+        // Routing data requirement under test:
+        // the scheduler must retain the latest drone coordinates because waiting-time
+        // and reroute decisions depend on current location, not just drone state.
         Scheduler scheduler = startScheduler(new Scheduler(null, buildNominalZones(), 1));
         scheduler.sendDroneStatusUpdate(status(1, DroneState.EN_ROUTE, -1, 12.5, 590.0, 125.0, 225.0, "en route"));
 

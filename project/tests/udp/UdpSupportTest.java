@@ -13,8 +13,8 @@ class UdpSupportTest {
 
     @Test
     void assignsDistinctCommandPortsForDifferentDrones() {
-        // UDP launcher support under test:
-        // each drone process needs a distinct command port so multiple drones can run independently.
+        // Multi-drone UDP launcher rule under test:
+        // each drone process needs its own command port so commands do not collide.
         assertEquals(5003, UdpConfig.commandPortForDrone(1));
         assertEquals(5004, UdpConfig.commandPortForDrone(2));
         assertEquals(5005, UdpConfig.commandPortForDrone(3));
@@ -22,8 +22,8 @@ class UdpSupportTest {
 
     @Test
     void sendsAndReceivesUdpPayloadWithoutCorruption() throws Exception {
-        // UDP utility under test:
-        // messages used by the subsystem launchers should survive a local loopback send/receive unchanged.
+        // UDP utility rule under test:
+        // subsystem payloads should survive a local loopback send/receive unchanged.
         try (DatagramSocket receiver = new DatagramSocket(0)) {
             receiver.setSoTimeout(2000);
             int port = receiver.getLocalPort();

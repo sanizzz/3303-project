@@ -10,8 +10,9 @@ class SchedulerResourceDecisionTest extends SchedulerTestSupport {
 
     @Test
     void returnsDroneToBaseWhenPendingMissionCannotBeServedWithRemainingBattery() {
-        // After completing the first mission, the drone does not have enough battery budget to safely
-        // handle the next queued mission and still satisfy the return-home requirement.
+        // Resource-safety rule under test:
+        // after one mission completes, the scheduler should send the drone back to base if
+        // the next waiting mission cannot be done safely with the remaining battery budget.
         Scheduler scheduler = startScheduler(new Scheduler(null, buildBatteryStressZones(), 1));
         scheduler.putRequest(request(1, Severity.LOW, 0));
         scheduler.putRequest(request(2, Severity.LOW, 1));

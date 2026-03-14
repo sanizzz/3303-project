@@ -12,8 +12,9 @@ class DroneSubsystemIntegrationTest extends SchedulerTestSupport {
 
     @Test
     void runsStableLocalEndToEndFlowWithTwoIndependentDrones() {
-        // This is the clean in-process integration demo:
-        // two drone subsystem threads operate independently while the Scheduler balances work between them.
+        // In-process integration demo:
+        // two drone subsystem threads must operate independently while the scheduler splits
+        // work instead of funnelling every mission through a single drone.
         Drone.configure(12.5, 80, 900.0, 2.0);
 
         Scheduler scheduler = startScheduler(new Scheduler(null, buildNominalZones(), 2));

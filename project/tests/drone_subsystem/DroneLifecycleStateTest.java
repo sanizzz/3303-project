@@ -11,9 +11,10 @@ class DroneLifecycleStateTest extends SchedulerTestSupport {
 
     @Test
     void completesHighSeverityMissionAfterRefillAndResumeCycle() {
-        // Drone lifecycle under test:
-        // a high-severity fire needs more foam than a single load, so the drone must
-        // drop once, return to base, refill, resume the mission, and then complete it.
+        // Drone lifecycle requirement under test:
+        // a single fire can require more suppressant than one tank, so the drone must
+        // drop its first load, return to base, refill, resume the same mission, and only
+        // then report completion back through the scheduler.
         Drone.configure(10.0, 80, 900.0, 2.0);
 
         Scheduler scheduler = startScheduler(new Scheduler(null, buildNominalZones(), 1));
