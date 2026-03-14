@@ -2,48 +2,72 @@
 autonumber
 hide footbox
 
-participant FireIncidentSubsystem as Fire
-participant Scheduler
-participant DroneSubsystem as Drone
+participant "Fire Incident\nSubsystem" as Fire
+participant "SchedulerMain\n(UDP adapter)" as SchedulerMain
+participant "Scheduler\n(core)" as Scheduler
+participant "Drone Subsystem\n(UDP listener + engine)" as Drone
 
 == Incident Input ==
-Fire -> Scheduler : putRequest(FireRequest)
+Fire -> SchedulerMain : UDP REQ|time|zone|type|severity
+activate SchedulerMain
+SchedulerMain -> Scheduler : putRequest(FireRequest)
 activate Scheduler
 Scheduler -> Scheduler : enqueueMission()
-Scheduler -> Scheduler : dispatchNextIfPossible()
-Scheduler --> Drone : DispatchCommand(DISPATCH, mission)
+Scheduler -> Scheduler : evaluate queued missions,\nseverity, ETA, battery, and reroute rules
+alt feasible dispatch exists
+  Scheduler -> Scheduler : queue DispatchCommand
+else no feasible drone yet
+  Scheduler -> Scheduler : keep mission queued
+end
 deactivate Scheduler
+deactivate SchedulerMain
+
+== Dispatch Forwarding ==
+SchedulerMain -> Scheduler : getNextDispatchCommand()
+activate Scheduler
+Scheduler --> SchedulerMain : DispatchCommand
+deactivate Scheduler
+alt mission dispatch
+  SchedulerMain -> Drone : UDP CMD|DISPATCH|droneId|mission...
+else queue drained and drone away from base
+  SchedulerMain -> Drone : UDP CMD|RETURN|droneId
+end
 
 == Mission Execution ==
 activate Drone
-Drone -> Scheduler : sendDroneStatusUpdate(EN_ROUTE)
-activate Scheduler
-Scheduler -> Scheduler : handleDroneStatusUpdate()
-deactivate Scheduler
+Drone -> Drone : decode command and start mission
 
-Drone -> Scheduler : sendDroneStatusUpdate(DROPPING_AGENT)\n(arrival notification)
-activate Scheduler
-Scheduler -> Scheduler : update drone position at zone
-deactivate Scheduler
-
-loop until fire requiredFoam == 0
-  Drone -> Drone : drop agent
-  alt tank empty and fire still active
-    Drone -> Scheduler : sendDroneStatusUpdate(IDLE)\n(refilled at base)
+loop while mission remains active
+  alt progress update while travelling or returning
+    Drone -> SchedulerMain : UDP STATUS|...|EN_ROUTE / RETURNING|...
+    SchedulerMain -> Scheduler : sendDroneStatusUpdate(update)
     activate Scheduler
-    Scheduler -> Scheduler : makeSchedulingDecision()
+    Scheduler -> Scheduler : record location and state
+    Scheduler -> Scheduler : evaluate reroute and next dispatch opportunities
+    deactivate Scheduler
+  else arrival, refill, or mission-complete event
+    Drone -> SchedulerMain : UDP STATUS|...|DROPPING_AGENT / IDLE|...
+    SchedulerMain -> Scheduler : sendDroneStatusUpdate(update)
+    activate Scheduler
+    alt mission completed
+      Scheduler -> Scheduler : mark mission completed
+      Scheduler -> Scheduler : queue completion and next dispatch/return decision
+    else reroute opportunity created by new request
+      Scheduler -> Scheduler : replace active mission for en-route drone
+      Scheduler -> Scheduler : queue updated DispatchCommand
+    else refill/continuation required
+      Scheduler -> Scheduler : keep mission active and await resumed trip
+    end
     deactivate Scheduler
   end
 end
-
-Drone -> Scheduler : sendDroneStatusUpdate(IDLE)\n(mission complete)
 deactivate Drone
-activate Scheduler
-Scheduler -> Scheduler : mark mission completed
-Scheduler --> Fire : completion acknowledgment
-Scheduler -> Scheduler : queue empty?\nif yes send RETURN_TO_BASE command
-deactivate Scheduler
 
-Fire -> Scheduler : getCompletion()
+== Completion Forwarding ==
+SchedulerMain -> Scheduler : getCompletion()
+activate Scheduler
+Scheduler --> SchedulerMain : FireRequest completion
+deactivate Scheduler
+SchedulerMain -> Fire : UDP COMP|zone|resolved
 
 @enduml

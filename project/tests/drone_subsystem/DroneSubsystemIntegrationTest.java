@@ -1,7 +1,10 @@
+package drone_subsystem;
+
 import Drone_subsystem.Drone;
 import Scheduler.Scheduler;
 import fire_incident_subsystem.FireRequest;
 import org.junit.jupiter.api.Test;
+import support.SchedulerTestSupport;
 import types.Severity;
 
 import java.util.Set;
@@ -12,7 +15,6 @@ class DroneSubsystemIntegrationTest extends SchedulerTestSupport {
 
     @Test
     void runsStableLocalEndToEndFlowWithTwoIndependentDrones() {
-        // In-process integration demo:
         // two drone subsystem threads must operate independently while the scheduler splits
         // work instead of funnelling every mission through a single drone.
         Drone.configure(12.5, 80, 900.0, 2.0);

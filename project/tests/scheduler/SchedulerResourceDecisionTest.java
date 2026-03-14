@@ -1,5 +1,8 @@
+package scheduler;
+
 import Scheduler.Scheduler;
 import org.junit.jupiter.api.Test;
+import support.SchedulerTestSupport;
 import types.DispatchCommand;
 import types.DroneState;
 import types.Severity;
@@ -10,7 +13,7 @@ class SchedulerResourceDecisionTest extends SchedulerTestSupport {
 
     @Test
     void returnsDroneToBaseWhenPendingMissionCannotBeServedWithRemainingBattery() {
-        // Resource-safety rule under test:
+        // Resource-test
         // after one mission completes, the scheduler should send the drone back to base if
         // the next waiting mission cannot be done safely with the remaining battery budget.
         Scheduler scheduler = startScheduler(new Scheduler(null, buildBatteryStressZones(), 1));

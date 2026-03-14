@@ -1,5 +1,8 @@
+package scheduler;
+
 import Scheduler.Scheduler;
 import org.junit.jupiter.api.Test;
+import support.SchedulerTestSupport;
 import types.DispatchCommand;
 import types.DroneState;
 import types.Severity;
@@ -11,7 +14,7 @@ class SchedulerWaitingTimeOptimizationTest extends SchedulerTestSupport {
 
     @Test
     void givesNextMissionToDroneThatCanReachItSoonerAfterCompletingCurrentWork() {
-        // Waiting-time rule under test:
+        // Waiting-time
         // after Drone 1 finishes a nearby mission, it should receive the next nearby fire
         // instead of leaving that work to a farther idle drone at base.
         Scheduler scheduler = startScheduler(new Scheduler(null, buildNominalZones(), 2));

@@ -1,15 +1,28 @@
 @startuml
-title Drone State Machine (Iteration 2)
+title Drone Execution State Machine (Iteration 3)
+
+state IDLE
+state EN_ROUTE
+state DROPPING_AGENT
+state RETURNING
+
+IDLE : do / wait for DispatchCommand from scheduler
+EN_ROUTE : entry / set active mission and target zone
+EN_ROUTE : do / move toward zone and send periodic STATUS updates
+DROPPING_AGENT : do / discharge agent and update required foam
+RETURNING : do / travel to base and send periodic STATUS updates
 
 [*] --> IDLE
 
 IDLE --> EN_ROUTE : DISPATCH
+EN_ROUTE --> EN_ROUTE : REROUTE_DISPATCH /\nreplace mission and destination
 EN_ROUTE --> DROPPING_AGENT : ARRIVED
 
 DROPPING_AGENT --> RETURNING : TANK_EMPTY and fire_not_out
-RETURNING --> IDLE : AT_BASE_REFILLED
+RETURNING --> IDLE : AT_BASE_REFILLED /\nrefill and decide next action
 
 DROPPING_AGENT --> IDLE : MISSION_COMPLETE
 IDLE --> RETURNING : RETURN_TO_BASE_CMD
+IDLE --> EN_ROUTE : RESUME_MISSION
 
 @enduml

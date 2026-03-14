@@ -1,6 +1,9 @@
+package scheduler;
+
 import Scheduler.Scheduler;
 import fire_incident_subsystem.FireRequest;
 import org.junit.jupiter.api.Test;
+import support.SchedulerTestSupport;
 import types.DispatchCommand;
 import types.DroneState;
 import types.Severity;
@@ -13,7 +16,6 @@ class SchedulerReroutePolicyTest extends SchedulerTestSupport {
 
     @Test
     void reroutesDroneToHigherSeverityFireWhileAlreadyEnRoute() {
-        // TA scenario under test:
         // once a drone is travelling to a lower-priority zone, a newly reported higher-priority
         // fire should cause a reroute instead of forcing the drone to finish the old trip first.
         Scheduler scheduler = startScheduler(new Scheduler(null, buildNominalZones(), 1));
@@ -42,7 +44,6 @@ class SchedulerReroutePolicyTest extends SchedulerTestSupport {
 
     @Test
     void reroutesDroneToSameSeverityFireThatAppearsEarlierOnItsPath() {
-        // TA hint under test:
         // if the new fire has the same severity but lies earlier on the current route,
         // the scheduler should let the drone service that earlier zone first.
         Scheduler scheduler = startScheduler(new Scheduler(null, buildLineZones(), 1));

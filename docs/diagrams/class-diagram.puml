@@ -1,6 +1,7 @@
 @startuml
 left to right direction
 skinparam classAttributeIconSize 0
+title Iteration 3 Design Overview
 
 package "Application" {
   class Main {
@@ -12,15 +13,26 @@ package "Application" {
 package "Subsystems" {
   class "Scheduler.Scheduler" as Scheduler {
     -state : SchedulerState
+    -incomingFireRequests : LinkedList<FireRequest>
     -missionQueue : LinkedList<Mission>
     -inProgressByMissionId : Map<Integer, Mission>
+    -activeMissionByDroneId : Map<Integer, Mission>
     -dispatchQueue : LinkedList<DispatchCommand>
+    -completionQueue : LinkedList<FireRequest>
+    -droneStateById : Map<Integer, DroneState>
+    -droneAgentById : Map<Integer, Double>
+    -droneBatteryById : Map<Integer, Double>
+    -dronePosXById : Map<Integer, Double>
+    -dronePosYById : Map<Integer, Double>
+    -assignedCountByDroneId : Map<Integer, Integer>
+    -configuredDroneCount : int
     +putRequest(req : FireRequest) : void
     +getDispatchCommandForDrone(droneId : int) : DispatchCommand
     +getNextDispatchCommand() : DispatchCommand
     +sendDroneStatusUpdate(update : DroneStatusUpdate) : void
     +getCompletion() : FireRequest
     +getActiveFires() : int
+    +setConfiguredDroneCount(count : int) : void
     +run() : void
   }
 
@@ -28,17 +40,33 @@ package "Subsystems" {
     -scheduler : Scheduler
     -csvFile : String
     -timeScale : int
+    -totalEventsSent : int
     -useUdp : boolean
+    -schedulerHost : String
+    -schedulerPort : int
+    -completionPort : int
     +setCsvFile(filename : String) : void
+    +setCsvPath(csvPath : String) : void
     +run() : void
   }
 
   class "Drone_subsystem.DroneSubsystem" as DroneSubsystem {
     -droneId : int
     -scheduler : Scheduler
-    -drone : Drone
+    -engine : DroneExecutionEngine
+    +run() : void
+  }
+
+  class "Drone_subsystem.DroneExecutionEngine" as DroneExecutionEngine {
+    -droneId : int
     -zoneMap : Map<Integer, Zone>
+    -drone : Drone
     -timeScale : int
+    -currentState : DroneState
+    -activeMission : Mission
+    -remainingDropSeconds : double
+    +submitCommand(command : DispatchCommand) : void
+    +getCurrentState() : DroneState
     +run() : void
   }
 }
@@ -52,7 +80,14 @@ package "Domain" {
     -requiredFoam : double
     -isResolved : boolean
     -inProgress : boolean
+    +getZoneId() : int
+    +getTime() : LocalTime
+    +getType() : EventType
+    +getSeverity() : Severity
+    +getRequiredFoam() : double
     +updateRequiredFoam(amount : double) : void
+    +setResolved(resolved : boolean) : void
+    +setInProgress(inProgress : boolean) : void
   }
 
   class "Drone_subsystem.Drone" as Drone {
@@ -67,8 +102,10 @@ package "Domain" {
 
   class "Drone_subsystem.Zone" as Zone {
     +{static} loadZones(filename : String) : Map<Integer, Zone>
+    +getZoneID() : int
     +getMiddleX() : int
     +getMiddleY() : int
+    +getZoneState() : ZoneState
     +setZoneState(state : ZoneState) : void
   }
 }
@@ -108,12 +145,21 @@ package "Types" {
     -missionId : int
     -fireRequest : FireRequest
     -status : MissionStatus
+    +getMissionId() : int
+    +getFireRequest() : FireRequest
+    +getZoneId() : int
+    +setStatus(status : MissionStatus) : void
   }
 
   class DispatchCommand {
     -targetDroneId : Integer
     -mission : Mission
     -returnToBase : boolean
+    +dispatch(targetDroneId : Integer, mission : Mission) : DispatchCommand
+    +returnToBase(targetDroneId : Integer) : DispatchCommand
+    +getTargetDroneId() : Integer
+    +getMission() : Mission
+    +isReturnToBase() : boolean
   }
 
   class DroneStatusUpdate {
@@ -122,17 +168,41 @@ package "Types" {
     -missionId : int
     -remainingAgent : double
     -remainingBattery : double
+    -positionX : double
+    -positionY : double
     -message : String
+    +hasPosition() : boolean
   }
 
-  class UdpUtil
-  class UdpConfig
+  class UdpUtil {
+    +send(host : String, port : int, payload : String) : void
+    +receive(socket : DatagramSocket) : String
+  }
+
+  class UdpConfig {
+    +FIRE_TO_SCHED_PORT : int
+    +DRONE_STATUS_PORT : int
+    +DRONE_COMMAND_BASE_PORT : int
+    +SCHED_TO_FIRE_PORT : int
+    +PROGRESS_STATUS_EVERY_N_TICKS : int
+    +LOG_EVERY_STATUS_UPDATE : boolean
+    +commandPortForDrone(droneId : int) : int
+    +commandPortForDrone(droneId : int, basePort : int) : int
+  }
 }
 
 package "Launchers (UDP mode)" {
-  class "Scheduler.SchedulerMain" as SchedulerMain
-  class "Drone_subsystem.DroneSubsystemMain" as DroneSubsystemMain
-  class "fire_incident_subsystem.FireIncidentSubsystemMain" as FireIncidentSubsystemMain
+  class "Scheduler.SchedulerMain" as SchedulerMain {
+    +main(args : String[]) : void
+  }
+
+  class "Drone_subsystem.DroneSubsystemMain" as DroneSubsystemMain {
+    +main(args : String[]) : void
+  }
+
+  class "fire_incident_subsystem.FireIncidentSubsystemMain" as FireIncidentSubsystemMain {
+    +main(args : String[]) : void
+  }
 }
 
 package "GUI" {
@@ -149,20 +219,36 @@ Main ..> DroneSubsystem : creates N
 Main ..> SimulationGUI : creates
 Main ..> Zone : loadZones()
 
-FireIncidentSubsystem --> Scheduler : putRequest/getCompletion
+FireIncidentSubsystem --> Scheduler : putRequest/getCompletion\n(GUI mode)
 Scheduler --> DispatchCommand
 DispatchCommand --> Mission
 Mission --> FireRequest
 Scheduler --> DroneStatusUpdate
 DroneSubsystem --> Scheduler : getDispatchCommandForDrone/sendDroneStatusUpdate
-DroneSubsystem --> Drone
-DroneSubsystem --> Zone
+DroneSubsystem --> DroneExecutionEngine
+DroneExecutionEngine --> DispatchCommand
+DroneExecutionEngine --> DroneStatusUpdate
+DroneExecutionEngine --> Drone
+DroneExecutionEngine --> Zone
 Scheduler --> Zone
 Scheduler --> SimulationGUI
 FireIncidentSubsystem --> UdpUtil
 SchedulerMain --> Scheduler
 SchedulerMain --> UdpUtil
+SchedulerMain --> DispatchCommand : forwards UDP commands
+SchedulerMain --> FireRequest : decodes REQ / sends COMP
+DroneSubsystemMain --> DroneExecutionEngine
 DroneSubsystemMain --> UdpUtil
+DroneSubsystemMain --> DispatchCommand : decodes CMD payload
+DroneSubsystemMain --> FireRequest : decodes mission payload
 FireIncidentSubsystemMain --> FireIncidentSubsystem
+SchedulerMain ..> UdpConfig
+DroneSubsystemMain ..> UdpConfig
+FireIncidentSubsystemMain ..> UdpConfig
+
+note bottom of SchedulerMain
+  UDP-only cross-subsystem communication is handled by the launcher threads:
+  REQ from Fire, STATUS from Drones, CMD to Drones, and COMP back to Fire.
+end note
 
 @enduml

@@ -1,15 +1,29 @@
 @startuml
-title Scheduler State Machine (Iteration 2)
+title Scheduler State Machine (Iteration 3)
+
+state IDLE
+state DISPATCHING
+state WAITING_FOR_DRONE
+
+IDLE : do / wait for incoming fire requests
+DISPATCHING : entry / pull newly queued requests into missionQueue
+DISPATCHING : do / evaluate severity, ETA, battery,\nload balance, and reroute rules
+DISPATCHING : exit / enqueue DispatchCommand for chosen drone
+WAITING_FOR_DRONE : do / track drone status updates,\nmission completion, refills, and queue changes
 
 [*] --> IDLE
 
-IDLE --> DISPATCHING : NEW_FIRE
+IDLE --> DISPATCHING : NEW_FIRE / enqueue mission
 DISPATCHING --> WAITING_FOR_DRONE : DISPATCH_SENT
+DISPATCHING --> DISPATCHING : no_feasible_idle_drone / keep mission queued
 
-WAITING_FOR_DRONE --> DISPATCHING : DRONE_IDLE + queue_non_empty + feasible
-WAITING_FOR_DRONE --> IDLE : QUEUE_EMPTY
-WAITING_FOR_DRONE --> IDLE : RETURN_TO_BASE
+WAITING_FOR_DRONE --> DISPATCHING : queued_mission + feasible_idle_drone
+WAITING_FOR_DRONE --> WAITING_FOR_DRONE : NEW_FIRE or STATUS_UPDATE /\nupdate queue, position, and mission tracking
+WAITING_FOR_DRONE --> IDLE : no queued or active missions /\nif drone away from base then queue RETURN command
 
-IDLE --> WAITING_FOR_DRONE : NEW_FIRE while drones busy
+note right of WAITING_FOR_DRONE
+  RETURN_TO_BASE is modeled as an action that the scheduler
+  emits after the queue drains, not as a separate scheduler state.
+end note
 
 @enduml

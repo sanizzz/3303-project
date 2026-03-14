@@ -1,5 +1,8 @@
+package scheduler;
+
 import Scheduler.Scheduler;
 import org.junit.jupiter.api.Test;
+import support.SchedulerTestSupport;
 import types.DispatchCommand;
 import types.DroneState;
 import types.Severity;

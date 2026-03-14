@@ -1,7 +1,9 @@
+package drone_subsystem;
 import Drone_subsystem.Drone;
 import Scheduler.Scheduler;
 import fire_incident_subsystem.FireRequest;
 import org.junit.jupiter.api.Test;
+import support.SchedulerTestSupport;
 import types.Severity;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
@@ -11,7 +13,6 @@ class DroneLifecycleStateTest extends SchedulerTestSupport {
 
     @Test
     void completesHighSeverityMissionAfterRefillAndResumeCycle() {
-        // Drone lifecycle requirement under test:
         // a single fire can require more suppressant than one tank, so the drone must
         // drop its first load, return to base, refill, resume the same mission, and only
         // then report completion back through the scheduler.

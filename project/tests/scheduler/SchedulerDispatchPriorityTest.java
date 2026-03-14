@@ -1,5 +1,8 @@
+package scheduler;
+
 import Scheduler.Scheduler;
 import org.junit.jupiter.api.Test;
+import support.SchedulerTestSupport;
 import types.DispatchCommand;
 import types.DroneState;
 import types.Severity;
@@ -14,7 +17,7 @@ class SchedulerDispatchPriorityTest extends SchedulerTestSupport {
 
     @Test
     void distributesConcurrentMissionsAcrossMultipleDrones() {
-        // Load-balancing rule under test:
+        // Load-balancing
         // two equivalent waiting fires should be split across available drones instead of
         // serializing both missions onto Drone 1.
         Scheduler scheduler = startScheduler(new Scheduler(null, buildNominalZones(), 2));
@@ -37,7 +40,7 @@ class SchedulerDispatchPriorityTest extends SchedulerTestSupport {
 
     @Test
     void prioritizesHigherSeverityWhenMultipleRequestsAreWaiting() {
-        // Priority rule under test:
+        // Priority rule
         // if a LOW request and a HIGH request are both waiting when dispatch happens,
         // the scheduler must dispatch the HIGH mission first.
         Scheduler scheduler = new Scheduler(null, buildNominalZones(), 1);
@@ -52,7 +55,6 @@ class SchedulerDispatchPriorityTest extends SchedulerTestSupport {
 
     @Test
     void recordsDroneLocationsFromStatusUpdates() {
-        // Routing data requirement under test:
         // the scheduler must retain the latest drone coordinates because waiting-time
         // and reroute decisions depend on current location, not just drone state.
         Scheduler scheduler = startScheduler(new Scheduler(null, buildNominalZones(), 1));

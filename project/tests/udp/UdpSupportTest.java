@@ -1,3 +1,5 @@
+package udp;
+
 import org.junit.jupiter.api.Test;
 import types.UdpConfig;
 import types.UdpUtil;

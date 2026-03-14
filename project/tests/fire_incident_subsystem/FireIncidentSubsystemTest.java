@@ -1,3 +1,5 @@
+package fire_incident_subsystem;
+
 import Scheduler.Scheduler;
 import fire_incident_subsystem.FireIncidentSubsystem;
 import fire_incident_subsystem.FireRequest;
@@ -25,7 +27,6 @@ class FireIncidentSubsystemTest {
 
     @Test
     void readsIncidentCsvAndSubmitsEventsToLocalSchedulerInCsvOrder() {
-        // Fire subsystem responsibility under test:
         // the incident reader must preserve the CSV order and submit the exact fire details
         // the scheduler expects, then wait for acknowledgements before terminating.
         RecordingScheduler scheduler = new RecordingScheduler();
@@ -55,9 +56,8 @@ class FireIncidentSubsystemTest {
 
     @Test
     void sendsUdpFireRequestsAndWaitsForAllCompletionAcknowledgements() throws Exception {
-        // UDP path under test:
-        // the fire subsystem must emit one REQ packet per incident and remain alive until
-        // it receives one completion acknowledgement for every submitted fire.
+        // the fire subsystem must emit one REQUEST packet per incident and remain alive until
+        //it receives one completion acknowledgement for every submitted fire.
         List<String> receivedRequests = new ArrayList<>();
         int completionPort = reserveEphemeralPort();
 

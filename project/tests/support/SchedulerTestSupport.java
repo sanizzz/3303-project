@@ -1,3 +1,5 @@
+package support;
+
 import Drone_subsystem.Drone;
 import Drone_subsystem.DroneSubsystem;
 import Drone_subsystem.Zone;
@@ -26,7 +28,7 @@ import java.util.function.BooleanSupplier;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.junit.jupiter.api.Assertions.fail;
 
-abstract class SchedulerTestSupport {
+public abstract class SchedulerTestSupport {
 
     protected static final LocalTime BASE_TIME = LocalTime.of(12, 0);
     protected static final long DEFAULT_TIMEOUT_MS = 4000;
