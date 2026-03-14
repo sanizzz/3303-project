@@ -10,38 +10,43 @@ import types.DroneStatusUpdate;
 import types.Mission;
 import types.MissionStatus;
 import types.SchedulerState;
+import types.Severity;
+import types.UdpConfig;
 
+import java.time.LocalTime;
 import java.util.HashMap;
 import java.util.LinkedList;
 import java.util.Map;
 
 /**
- * Scheduler state machine for Iteration 2.
- * Handles mission queueing, dispatch decisions, and drone status updates.
+ * Scheduler state machine for Iteration 3.
+ * Supports multiple drones, workload-aware dispatching, rerouting, and UDP launcher mode.
  */
 public class Scheduler implements Runnable {
 
+    private static final double BATTERY_MARGIN_SECONDS = 10.0;
+    private static final double ON_PATH_TOLERANCE = 75.0;
+
     private SchedulerState state = SchedulerState.IDLE;
 
-    // --- Mission Queues ---
     private final LinkedList<Mission> missionQueue = new LinkedList<>();
     private final Map<Integer, Mission> inProgressByMissionId = new HashMap<>();
+    private final Map<Integer, Mission> activeMissionByDroneId = new HashMap<>();
 
-    // --- Communication Queues ---
     private final LinkedList<FireRequest> incomingFireRequests = new LinkedList<>();
     private final LinkedList<DispatchCommand> dispatchQueue = new LinkedList<>();
     private final LinkedList<DroneStatusUpdate> statusUpdateQueue = new LinkedList<>();
     private final LinkedList<FireRequest> completionQueue = new LinkedList<>();
 
-    // --- Drone Tracking (multi-drone ready) ---
     private final Map<Integer, DroneState> droneStateById = new HashMap<>();
     private final Map<Integer, Double> droneAgentById = new HashMap<>();
     private final Map<Integer, Double> droneBatteryById = new HashMap<>();
     private final Map<Integer, Double> dronePosXById = new HashMap<>();
     private final Map<Integer, Double> dronePosYById = new HashMap<>();
+    private final Map<Integer, Integer> assignedCountByDroneId = new HashMap<>();
+    private final Map<Integer, Boolean> droneStatusSeenById = new HashMap<>();
     private int configuredDroneCount = 1;
 
-    // --- References ---
     private SimulationGUI gui;
     private Map<Integer, Zone> zoneMap;
 
@@ -80,6 +85,8 @@ public class Scheduler implements Runnable {
             droneBatteryById.putIfAbsent(i, Drone.getFullBattery());
             dronePosXById.putIfAbsent(i, 0.0);
             dronePosYById.putIfAbsent(i, 0.0);
+            assignedCountByDroneId.putIfAbsent(i, 0);
+            droneStatusSeenById.putIfAbsent(i, false);
         }
     }
 
@@ -91,19 +98,17 @@ public class Scheduler implements Runnable {
         while (!Thread.currentThread().isInterrupted()) {
             synchronized (this) {
                 while (!incomingFireRequests.isEmpty()) {
-                    FireRequest req = incomingFireRequests.removeFirst();
-                    enqueueMission(req);
+                    enqueueMission(incomingFireRequests.removeFirst());
                 }
 
                 while (!statusUpdateQueue.isEmpty()) {
-                    DroneStatusUpdate update = statusUpdateQueue.removeFirst();
-                    handleDroneStatusUpdate(update);
+                    handleDroneStatusUpdate(statusUpdateQueue.removeFirst());
                 }
 
                 dispatchNextIfPossible();
 
                 try {
-                    wait(300);
+                    wait(200);
                 } catch (InterruptedException e) {
                     Thread.currentThread().interrupt();
                     break;
@@ -116,6 +121,10 @@ public class Scheduler implements Runnable {
 
     private void enqueueMission(FireRequest req) {
         if (isZoneAlreadyActive(req.getZoneId())) {
+            req.setResolved(false);
+            req.setInProgress(false);
+            completionQueue.add(req);
+            notifyAll();
             log("[Scheduler] Ignored duplicate active fire in Zone " + req.getZoneId()
                     + " (one-fire-per-zone assumption).");
             return;
@@ -123,6 +132,7 @@ public class Scheduler implements Runnable {
 
         Mission mission = new Mission(req);
         missionQueue.add(mission);
+
         SchedulerState old = state;
         if (state == SchedulerState.IDLE) {
             state = SchedulerState.DISPATCHING;
@@ -130,7 +140,89 @@ public class Scheduler implements Runnable {
         }
 
         log(String.format("[Scheduler] Enqueued %s | Queue size: %d", mission, missionQueue.size()));
+
+        attemptRerouteForNewMission(mission);
         updateGui();
+    }
+
+    private boolean attemptRerouteForNewMission(Mission newMission) {
+        RerouteCandidate reroute = findBestRerouteCandidate(newMission);
+        if (reroute == null) {
+            return false;
+        }
+
+        Mission previousMission = activeMissionByDroneId.get(reroute.droneId);
+        if (previousMission == null) {
+            return false;
+        }
+
+        missionQueue.remove(newMission);
+        inProgressByMissionId.remove(previousMission.getMissionId());
+        previousMission.setStatus(MissionStatus.QUEUED);
+        missionQueue.add(previousMission);
+
+        newMission.setStatus(MissionStatus.IN_PROGRESS);
+        inProgressByMissionId.put(newMission.getMissionId(), newMission);
+        activeMissionByDroneId.put(reroute.droneId, newMission);
+        dispatchQueue.add(DispatchCommand.dispatch(reroute.droneId, newMission));
+        notifyAll();
+
+        log(buildRerouteMessage(reroute.droneId, previousMission, newMission));
+        return true;
+    }
+
+    private RerouteCandidate findBestRerouteCandidate(Mission newMission) {
+        if (zoneMap == null) {
+            return null;
+        }
+
+        Zone newZone = zoneMap.get(newMission.getZoneId());
+        if (newZone == null) {
+            return null;
+        }
+
+        RerouteCandidate best = null;
+        for (int droneId = 1; droneId <= configuredDroneCount; droneId++) {
+            if (droneStateById.getOrDefault(droneId, DroneState.IDLE) != DroneState.EN_ROUTE) {
+                continue;
+            }
+
+            Mission currentMission = activeMissionByDroneId.get(droneId);
+            if (currentMission == null) {
+                continue;
+            }
+
+            Zone currentZone = zoneMap.get(currentMission.getZoneId());
+            if (currentZone == null) {
+                continue;
+            }
+
+            double fromX = dronePosXById.getOrDefault(droneId, 0.0);
+            double fromY = dronePosYById.getOrDefault(droneId, 0.0);
+            double currentDistance = distance(fromX, fromY, currentZone.getMiddleX(), currentZone.getMiddleY());
+            double newDistance = distance(fromX, fromY, newZone.getMiddleX(), newZone.getMiddleY());
+            int currentSeverityRank = severityRank(currentMission.getFireRequest().getSeverity());
+            int newSeverityRank = severityRank(newMission.getFireRequest().getSeverity());
+
+            boolean higherSeverityReroute = newSeverityRank > currentSeverityRank;
+            boolean sameSeverityOnPathReroute = newSeverityRank == currentSeverityRank
+                    && newDistance < currentDistance
+                    && isPointOnSegment(
+                            fromX, fromY,
+                            currentZone.getMiddleX(), currentZone.getMiddleY(),
+                            newZone.getMiddleX(), newZone.getMiddleY());
+
+            if (!higherSeverityReroute && !sameSeverityOnPathReroute) {
+                continue;
+            }
+
+            RerouteCandidate candidate = new RerouteCandidate(droneId, newDistance, newSeverityRank - currentSeverityRank);
+            if (best == null || candidate.isBetterThan(best)) {
+                best = candidate;
+            }
+        }
+
+        return best;
     }
 
     private boolean isZoneAlreadyActive(int zoneId) {
@@ -148,62 +240,78 @@ public class Scheduler implements Runnable {
     }
 
     private void dispatchNextIfPossible() {
-        while (!missionQueue.isEmpty()) {
-            Mission next = missionQueue.peek();
-            Integer droneId = chooseIdleDroneForMission(next);
-            if (droneId == null) {
+        while (true) {
+            DispatchCandidate candidate = findBestDispatchCandidate();
+            if (candidate == null) {
                 return;
             }
-
-            Mission mission = missionQueue.removeFirst();
-            mission.setStatus(MissionStatus.IN_PROGRESS);
-            inProgressByMissionId.put(mission.getMissionId(), mission);
-
-            SchedulerState old = state;
-            state = SchedulerState.DISPATCHING;
-            logTransition(old, state, "DISPATCH_MISSION(Zone " + mission.getZoneId() + ", Drone " + droneId + ")");
-
-            dispatchQueue.add(DispatchCommand.dispatch(droneId, mission));
-            droneStateById.put(droneId, DroneState.EN_ROUTE);
-            notifyAll();
-
-            old = state;
-            state = SchedulerState.WAITING_FOR_DRONE;
-            logTransition(old, state, "DISPATCH_SENT");
-            updateGui();
+            assignMission(candidate);
         }
     }
 
-    private Integer chooseIdleDroneForMission(Mission mission) {
-        for (int droneId = 1; droneId <= configuredDroneCount; droneId++) {
-            DroneState dState = droneStateById.getOrDefault(droneId, DroneState.IDLE);
-            if (dState != DroneState.IDLE) {
-                continue;
-            }
+    private DispatchCandidate findBestDispatchCandidate() {
+        DispatchCandidate best = null;
+        for (Mission mission : missionQueue) {
+            for (int droneId = 1; droneId <= configuredDroneCount; droneId++) {
+                if (!isDroneIdle(droneId)) {
+                    continue;
+                }
 
-            double agent = droneAgentById.getOrDefault(droneId, Drone.getLoadCapacity());
-            double x = dronePosXById.getOrDefault(droneId, 0.0);
-            double y = dronePosYById.getOrDefault(droneId, 0.0);
+                refreshBaseResourcesIfNeeded(droneId);
+                if (!canDroneTakeMissionNow(mission, droneId)) {
+                    continue;
+                }
 
-            if (agent <= 0 && Math.abs(x) < 0.0001 && Math.abs(y) < 0.0001) {
-                droneAgentById.put(droneId, Drone.getLoadCapacity());
-                droneBatteryById.put(droneId, Drone.getFullBattery());
-                log("[Scheduler] Drone " + droneId + " refilled instantly at base.");
-            }
-
-            if (!hasBatteryForMission(mission, droneId)) {
-                log(String.format(
-                        "[Scheduler] Drone %d battery %.1fs insufficient for Zone %d trip budget. Commanding return to base.",
+                DispatchCandidate candidate = new DispatchCandidate(
+                        mission,
                         droneId,
-                        droneBatteryById.getOrDefault(droneId, Drone.getFullBattery()),
-                        mission.getZoneId()));
-                sendReturnToBase(droneId);
-                continue;
-            }
+                        severityRank(mission.getFireRequest().getSeverity()),
+                        estimateTravelTimeToMission(mission, droneId),
+                        mission.getFireRequest().getTime(),
+                        assignedCountByDroneId.getOrDefault(droneId, 0));
 
-            return droneId;
+                if (best == null || candidate.isBetterThan(best)) {
+                    best = candidate;
+                }
+            }
         }
-        return null;
+
+        return best;
+    }
+
+    private void assignMission(DispatchCandidate candidate) {
+        missionQueue.remove(candidate.mission);
+        candidate.mission.setStatus(MissionStatus.IN_PROGRESS);
+        inProgressByMissionId.put(candidate.mission.getMissionId(), candidate.mission);
+        activeMissionByDroneId.put(candidate.droneId, candidate.mission);
+        int newAssignedCount = assignedCountByDroneId.getOrDefault(candidate.droneId, 0) + 1;
+        assignedCountByDroneId.put(candidate.droneId, newAssignedCount);
+
+        SchedulerState old = state;
+        state = SchedulerState.DISPATCHING;
+        logTransition(old, state,
+                "DISPATCH_MISSION(Zone " + candidate.mission.getZoneId() + ", Drone " + candidate.droneId + ")");
+        log(String.format(
+                "[Scheduler] Dispatch decision: Drone %d -> Zone %d | Severity=%s | ETA=%.1fs | AssignedLoads=%d",
+                candidate.droneId,
+                candidate.mission.getZoneId(),
+                candidate.mission.getFireRequest().getSeverity(),
+                candidate.estimatedTravelSeconds,
+                newAssignedCount));
+        if (!droneStatusSeenById.getOrDefault(candidate.droneId, false)) {
+            log(String.format(
+                    "[Scheduler] Warning: Drone %d has not reported any UDP status yet. Verify that its process is running and listening on the expected command port.",
+                    candidate.droneId));
+        }
+
+        dispatchQueue.add(DispatchCommand.dispatch(candidate.droneId, candidate.mission));
+        droneStateById.put(candidate.droneId, DroneState.EN_ROUTE);
+        notifyAll();
+
+        old = state;
+        state = SchedulerState.WAITING_FOR_DRONE;
+        logTransition(old, state, "DISPATCH_SENT");
+        updateGui();
     }
 
     private void handleDroneStatusUpdate(DroneStatusUpdate update) {
@@ -213,45 +321,40 @@ public class Scheduler implements Runnable {
         droneStateById.put(droneId, update.getDroneState());
         droneAgentById.put(droneId, update.getRemainingAgent());
         droneBatteryById.put(droneId, update.getRemainingBattery());
+        droneStatusSeenById.put(droneId, true);
+        if (update.hasPosition()) {
+            dronePosXById.put(droneId, update.getPositionX());
+            dronePosYById.put(droneId, update.getPositionY());
+        }
 
-        log("[Scheduler] Received DroneStatusUpdate: " + update);
+        if (shouldLogStatusUpdate(update)) {
+            log("[Scheduler] Received DroneStatusUpdate: " + update);
+        }
 
         Mission mission = inProgressByMissionId.get(update.getMissionId());
-        if (update.getDroneState() == DroneState.DROPPING_AGENT && mission != null) {
-            if (isArrivalUpdate(update)) {
-                Zone z = zoneMap != null ? zoneMap.get(mission.getZoneId()) : null;
-                if (z != null) {
-                    dronePosXById.put(droneId, (double) z.getMiddleX());
-                    dronePosYById.put(droneId, (double) z.getMiddleY());
-                }
-                log("[Scheduler] Drone " + droneId + " arrived at Zone " + mission.getZoneId() + ".");
+        if (update.getDroneState() == DroneState.DROPPING_AGENT && mission != null && isArrivalUpdate(update)) {
+            Zone zone = zoneMap != null ? zoneMap.get(mission.getZoneId()) : null;
+            if (zone != null) {
+                dronePosXById.put(droneId, (double) zone.getMiddleX());
+                dronePosYById.put(droneId, (double) zone.getMiddleY());
+                zone.setZoneState(Zone.ZoneState.ON_FIRE);
             }
+            log("[Scheduler] Drone " + droneId + " arrived at Zone " + mission.getZoneId() + ".");
         } else if (update.getDroneState() == DroneState.IDLE) {
             if (mission != null) {
                 if (isMissionCompletionUpdate(update)) {
                     completeMission(droneId, mission);
-                    makeSchedulingDecision(droneId);
                 } else {
-                    // Drone may report IDLE at base while refilling mid-mission.
-                    // Keep it reserved to the active mission so queued work is not dispatched early.
                     droneStateById.put(droneId, DroneState.EN_ROUTE);
                     log("[Scheduler] Drone " + droneId + " refilled and continuing Mission "
                             + mission.getMissionId() + ".");
+                    updateGui();
+                    return;
                 }
             } else {
-                // Returned to base without mission completion
-                droneAgentById.put(droneId, Drone.getLoadCapacity());
-                droneBatteryById.put(droneId, Drone.getFullBattery());
-                dronePosXById.put(droneId, 0.0);
-                dronePosYById.put(droneId, 0.0);
-                log("[Scheduler] Drone " + droneId + " at base. Instant refill/recharge complete.");
-                SchedulerState old = state;
-                state = SchedulerState.IDLE;
-                if (old != state) {
-                    logTransition(old, state, "DRONE_AT_BASE");
-                }
-                dispatchNextIfPossible();
+                resetDroneAtBase(droneId);
             }
+            handleDroneAvailability(droneId);
         }
 
         updateGui();
@@ -276,11 +379,32 @@ public class Scheduler implements Runnable {
         return msg.trim().toLowerCase().startsWith("arrived");
     }
 
+    private boolean shouldLogStatusUpdate(DroneStatusUpdate update) {
+        if (UdpConfig.LOG_EVERY_STATUS_UPDATE) {
+            return true;
+        }
+
+        DroneState state = update.getDroneState();
+        if (state == DroneState.EN_ROUTE || state == DroneState.RETURNING) {
+            return false;
+        }
+
+        String message = update.getMessage();
+        if (message == null) {
+            return true;
+        }
+
+        String normalized = message.trim().toLowerCase();
+        return !normalized.startsWith("en route")
+                && !normalized.equals("returning to base");
+    }
+
     private void completeMission(int droneId, Mission mission) {
         mission.setStatus(MissionStatus.COMPLETED);
         mission.getFireRequest().setResolved(true);
         mission.getFireRequest().setInProgress(false);
         inProgressByMissionId.remove(mission.getMissionId());
+        activeMissionByDroneId.remove(droneId);
 
         if (zoneMap != null) {
             Zone zone = zoneMap.get(mission.getZoneId());
@@ -302,34 +426,83 @@ public class Scheduler implements Runnable {
                 droneBatteryById.getOrDefault(droneId, Drone.getFullBattery())));
     }
 
-    private void makeSchedulingDecision(int droneId) {
+    private void handleDroneAvailability(int droneId) {
         if (missionQueue.isEmpty()) {
-            SchedulerState old = state;
-            state = SchedulerState.IDLE;
-            logTransition(old, state, "QUEUE_EMPTY");
-            log("[Scheduler] Decision: No queued missions. Commanding Drone " + droneId + " to return to base.");
-            sendReturnToBase(droneId);
+            if (!isDroneAtBase(droneId)) {
+                SchedulerState old = state;
+                state = inProgressByMissionId.isEmpty() ? SchedulerState.IDLE : SchedulerState.WAITING_FOR_DRONE;
+                logTransition(old, state, inProgressByMissionId.isEmpty() ? "QUEUE_EMPTY" : "QUEUE_EMPTY_WAITING_FOR_ACTIVE");
+                sendReturnToBase(droneId);
+            } else {
+                SchedulerState old = state;
+                state = inProgressByMissionId.isEmpty() ? SchedulerState.IDLE : SchedulerState.WAITING_FOR_DRONE;
+                if (old != state) {
+                    logTransition(old, state,
+                            inProgressByMissionId.isEmpty() ? "QUEUE_EMPTY_AT_BASE" : "QUEUE_EMPTY_AT_BASE_WAITING_FOR_ACTIVE");
+                }
+            }
             return;
         }
 
-        Mission next = missionQueue.peek();
-        double agent = droneAgentById.getOrDefault(droneId, Drone.getLoadCapacity());
-        if (agent <= 0) {
-            log(String.format("[Scheduler] Decision: Drone %d agent EMPTY. Returning to base.", droneId));
-            sendReturnToBase(droneId);
-            return;
-        }
-
-        if (!hasBatteryForMission(next, droneId)) {
-            log(String.format("[Scheduler] Decision: Drone %d battery insufficient for next mission. Returning to base.",
+        if (!canDroneServeAnyPendingMission(droneId)) {
+            log(String.format("[Scheduler] Drone %d cannot serve pending work with current resources. Returning to base.",
                     droneId));
             sendReturnToBase(droneId);
             return;
         }
 
-        log(String.format("[Scheduler] Decision: Dispatch next mission (Zone %d) to available idle drone.",
-                next.getZoneId()));
         dispatchNextIfPossible();
+    }
+
+    private void resetDroneAtBase(int droneId) {
+        droneAgentById.put(droneId, Drone.getLoadCapacity());
+        droneBatteryById.put(droneId, Drone.getFullBattery());
+        dronePosXById.put(droneId, 0.0);
+        dronePosYById.put(droneId, 0.0);
+        droneStateById.put(droneId, DroneState.IDLE);
+        log("[Scheduler] Drone " + droneId + " at base. Instant refill/recharge complete.");
+    }
+
+    private void refreshBaseResourcesIfNeeded(int droneId) {
+        if (isDroneAtBase(droneId)) {
+            droneAgentById.put(droneId, Drone.getLoadCapacity());
+            droneBatteryById.put(droneId, Drone.getFullBattery());
+        }
+    }
+
+    private boolean canDroneServeAnyPendingMission(int droneId) {
+        refreshBaseResourcesIfNeeded(droneId);
+        if (droneAgentById.getOrDefault(droneId, Drone.getLoadCapacity()) <= 0 && !isDroneAtBase(droneId)) {
+            return false;
+        }
+        for (Mission mission : missionQueue) {
+            if (canDroneTakeMissionNow(mission, droneId)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean canDroneTakeMissionNow(Mission mission, int droneId) {
+        if (mission == null) {
+            return false;
+        }
+
+        if (droneAgentById.getOrDefault(droneId, Drone.getLoadCapacity()) <= 0 && !isDroneAtBase(droneId)) {
+            return false;
+        }
+
+        return hasBatteryForMission(mission, droneId);
+    }
+
+    private boolean isDroneIdle(int droneId) {
+        return droneStateById.getOrDefault(droneId, DroneState.IDLE) == DroneState.IDLE
+                && !activeMissionByDroneId.containsKey(droneId);
+    }
+
+    private boolean isDroneAtBase(int droneId) {
+        return Math.abs(dronePosXById.getOrDefault(droneId, 0.0)) < 0.0001
+                && Math.abs(dronePosYById.getOrDefault(droneId, 0.0)) < 0.0001;
     }
 
     private void sendReturnToBase(Integer targetDroneId) {
@@ -377,7 +550,56 @@ public class Scheduler implements Runnable {
         double requiredTravelSeconds = (distToTarget + distToHome) / Drone.getSpeed();
         double availableBattery = droneBatteryById.getOrDefault(droneId, Drone.getFullBattery());
 
-        return availableBattery >= (requiredTravelSeconds + 10.0);
+        return availableBattery >= (requiredTravelSeconds + BATTERY_MARGIN_SECONDS);
+    }
+
+    private double estimateTravelTimeToMission(Mission mission, int droneId) {
+        if (mission == null || zoneMap == null) {
+            return 0.0;
+        }
+
+        Zone target = zoneMap.get(mission.getZoneId());
+        if (target == null) {
+            return 0.0;
+        }
+
+        double fromX = dronePosXById.getOrDefault(droneId, 0.0);
+        double fromY = dronePosYById.getOrDefault(droneId, 0.0);
+        return distance(fromX, fromY, target.getMiddleX(), target.getMiddleY()) / Drone.getSpeed();
+    }
+
+    private int severityRank(Severity severity) {
+        if (severity == null) {
+            return 0;
+        }
+        switch (severity) {
+            case HIGH:
+                return 3;
+            case MODERATE:
+                return 2;
+            case LOW:
+            default:
+                return 1;
+        }
+    }
+
+    private boolean isPointOnSegment(double startX, double startY, double endX, double endY, double pointX,
+            double pointY) {
+        double segDx = endX - startX;
+        double segDy = endY - startY;
+        double segLengthSquared = (segDx * segDx) + (segDy * segDy);
+        if (segLengthSquared <= 0.0001) {
+            return false;
+        }
+
+        double projection = (((pointX - startX) * segDx) + ((pointY - startY) * segDy)) / segLengthSquared;
+        if (projection < 0.0 || projection > 1.0) {
+            return false;
+        }
+
+        double projectedX = startX + (projection * segDx);
+        double projectedY = startY + (projection * segDy);
+        return distance(projectedX, projectedY, pointX, pointY) <= ON_PATH_TOLERANCE;
     }
 
     private double distance(double x1, double y1, double x2, double y2) {
@@ -386,7 +608,22 @@ public class Scheduler implements Runnable {
         return Math.sqrt(dx * dx + dy * dy);
     }
 
-    // ==================== PUBLIC API ====================
+    private String buildRerouteMessage(int droneId, Mission previousMission, Mission newMission) {
+        Severity previousSeverity = previousMission.getFireRequest().getSeverity();
+        Severity newSeverity = newMission.getFireRequest().getSeverity();
+        String reason = severityRank(newSeverity) > severityRank(previousSeverity)
+                ? "higher priority fire"
+                : "same severity fire earlier on current path";
+
+        return String.format(
+                "[Scheduler] Rerouting Drone %d from Zone %d (%s) to Zone %d (%s) because of %s.",
+                droneId,
+                previousMission.getZoneId(),
+                previousSeverity,
+                newMission.getZoneId(),
+                newSeverity,
+                reason);
+    }
 
     public synchronized void putRequest(FireRequest req) {
         incomingFireRequests.add(req);
@@ -394,9 +631,6 @@ public class Scheduler implements Runnable {
         notifyAll();
     }
 
-    /**
-     * For DroneSubsystem threads in same JVM mode.
-     */
     public synchronized DispatchCommand getDispatchCommandForDrone(int droneId) {
         while (true) {
             for (int i = 0; i < dispatchQueue.size(); i++) {
@@ -417,9 +651,6 @@ public class Scheduler implements Runnable {
         }
     }
 
-    /**
-     * For UDP launcher mode where scheduler forwards commands externally.
-     */
     public synchronized DispatchCommand getNextDispatchCommand() {
         while (dispatchQueue.isEmpty()) {
             try {
@@ -432,9 +663,6 @@ public class Scheduler implements Runnable {
         return dispatchQueue.removeFirst();
     }
 
-    /**
-     * Backward-compatible helper for older callers.
-     */
     public synchronized Mission getDispatchedMission() {
         DispatchCommand cmd = getDispatchCommandForDrone(1);
         if (cmd == null || cmd.isReturnToBase()) {
@@ -460,7 +688,6 @@ public class Scheduler implements Runnable {
         return completionQueue.removeFirst();
     }
 
-    // Iteration 1 compatibility methods
     public synchronized FireRequest getRequest() {
         return null;
     }
@@ -473,11 +700,27 @@ public class Scheduler implements Runnable {
     }
 
     public synchronized DroneState getDroneState() {
-        return droneStateById.getOrDefault(1, DroneState.IDLE);
+        return getDroneState(1);
+    }
+
+    public synchronized DroneState getDroneState(int droneId) {
+        return droneStateById.getOrDefault(droneId, DroneState.IDLE);
     }
 
     public synchronized SchedulerState getSchedulerState() {
         return state;
+    }
+
+    public synchronized double getDroneX(int droneId) {
+        return dronePosXById.getOrDefault(droneId, 0.0);
+    }
+
+    public synchronized double getDroneY(int droneId) {
+        return dronePosYById.getOrDefault(droneId, 0.0);
+    }
+
+    public synchronized int getAssignedCount(int droneId) {
+        return assignedCountByDroneId.getOrDefault(droneId, 0);
     }
 
     private void updateGui() {
@@ -495,6 +738,60 @@ public class Scheduler implements Runnable {
         System.out.println(message);
         if (gui != null) {
             gui.log(message);
+        }
+    }
+
+    private static class RerouteCandidate {
+        private final int droneId;
+        private final double distanceToNewZone;
+        private final int severityUpgrade;
+
+        private RerouteCandidate(int droneId, double distanceToNewZone, int severityUpgrade) {
+            this.droneId = droneId;
+            this.distanceToNewZone = distanceToNewZone;
+            this.severityUpgrade = severityUpgrade;
+        }
+
+        private boolean isBetterThan(RerouteCandidate other) {
+            if (severityUpgrade != other.severityUpgrade) {
+                return severityUpgrade > other.severityUpgrade;
+            }
+            return distanceToNewZone < other.distanceToNewZone;
+        }
+    }
+
+    private static class DispatchCandidate {
+        private final Mission mission;
+        private final int droneId;
+        private final int severityRank;
+        private final double estimatedTravelSeconds;
+        private final LocalTime requestTime;
+        private final int assignedCount;
+
+        private DispatchCandidate(Mission mission, int droneId, int severityRank, double estimatedTravelSeconds,
+                LocalTime requestTime, int assignedCount) {
+            this.mission = mission;
+            this.droneId = droneId;
+            this.severityRank = severityRank;
+            this.estimatedTravelSeconds = estimatedTravelSeconds;
+            this.requestTime = requestTime;
+            this.assignedCount = assignedCount;
+        }
+
+        private boolean isBetterThan(DispatchCandidate other) {
+            if (severityRank != other.severityRank) {
+                return severityRank > other.severityRank;
+            }
+            if (Math.abs(estimatedTravelSeconds - other.estimatedTravelSeconds) > 0.0001) {
+                return estimatedTravelSeconds < other.estimatedTravelSeconds;
+            }
+            if (assignedCount != other.assignedCount) {
+                return assignedCount < other.assignedCount;
+            }
+            if (requestTime != null && other.requestTime != null && !requestTime.equals(other.requestTime)) {
+                return requestTime.isBefore(other.requestTime);
+            }
+            return mission.getMissionId() < other.mission.getMissionId();
         }
     }
 }

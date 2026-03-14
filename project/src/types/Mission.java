@@ -15,9 +15,16 @@ public class Mission {
     private MissionStatus status;
 
     public Mission(FireRequest fireRequest) {
-        this.missionId = nextId++;
+        this(nextId++, fireRequest);
+    }
+
+    public Mission(int missionId, FireRequest fireRequest) {
+        this.missionId = missionId;
         this.fireRequest = fireRequest;
         this.status = MissionStatus.QUEUED;
+        if (missionId >= nextId) {
+            nextId = missionId + 1;
+        }
     }
 
     public int getMissionId() {

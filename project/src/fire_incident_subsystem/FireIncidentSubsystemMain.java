@@ -8,7 +8,7 @@ import types.UdpConfig;
 public class FireIncidentSubsystemMain {
 
     public static void main(String[] args) {
-        String csv = getArg(args, "--csv", "sampleData/Sample_event_file.csv");
+        String csv = getArg(args, "--csv", "sampleData/test_mixed_scenario.csv");
         String schedulerHost = getArg(args, "--schedulerHost", "localhost");
         int schedulerPort = parseIntArg(args, "--schedulerPort", UdpConfig.FIRE_TO_SCHED_PORT);
         int completionPort = parseIntArg(args, "--completionPort", UdpConfig.SCHED_TO_FIRE_PORT);

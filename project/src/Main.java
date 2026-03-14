@@ -35,7 +35,7 @@ public class Main {
 
         SimulationGUI gui = guiRef[0];
 
-        // Iteration 2: scheduler supports one drone by default, scalable to multiple.
+        // Iteration 3 GUI mode: same-process demo with multi-drone scheduler support.
         Scheduler scheduler = new Scheduler(gui, zoneMap, 1);
         FireIncidentSubsystem fireSubsystem = new FireIncidentSubsystem(scheduler, gui, null, TIME_SCALE);
 
@@ -89,4 +89,3 @@ public class Main {
         throw new IllegalStateException("Unable to find required input file. Tried: " + Arrays.toString(candidates));
     }
 }
-

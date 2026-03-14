@@ -9,14 +9,16 @@ import types.Severity;
 import types.UdpConfig;
 import types.UdpUtil;
 
-import java.io.*;
-import java.time.LocalTime;
+import java.io.FileReader;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.Reader;
 import java.net.DatagramSocket;
+import java.time.LocalTime;
 
 /**
  * Reads fire events from CSV and submits them to the Scheduler.
- * In Iteration 2, fire requests are sent without blocking per-request.
- * The subsystem then monitors completions in a separate loop.
+ * In UDP mode the subsystem waits for completion acknowledgements after all events are sent.
  */
 public class FireIncidentSubsystem implements Runnable {
 
@@ -73,12 +75,8 @@ public class FireIncidentSubsystem implements Runnable {
             return;
         }
 
-        // Phase 1: Read CSV and send all fire requests to Scheduler
         try {
-            InputStream in = FireIncidentSubsystem.class
-                    .getClassLoader()
-                    .getResourceAsStream(currentPath);
-
+            InputStream in = FireIncidentSubsystem.class.getClassLoader().getResourceAsStream(currentPath);
             Reader sourceReader = (in != null) ? new InputStreamReader(in) : new FileReader(currentPath);
             LocalTime previousTime = null;
 
@@ -91,21 +89,18 @@ public class FireIncidentSubsystem implements Runnable {
                     EventType type = EventType.valueOf(row[2].trim().toUpperCase());
                     Severity severity = Severity.valueOf(row[3].trim().toUpperCase());
 
-                    // Simulate time delay between events
                     if (previousTime != null) {
                         long delaySeconds = java.time.Duration.between(previousTime, time).getSeconds();
                         if (delaySeconds > 0) {
                             long delayMs = (delaySeconds * 1000) / timeScale;
-                            log(String.format("[Fire] Waiting %.1fs (scaled) before next event...",
-                                    delayMs / 1000.0));
+                            log(String.format("[Fire] Waiting %.1fs (scaled) before next event...", delayMs / 1000.0));
                             Thread.sleep(Math.max(1, delayMs));
                         }
                     }
                     previousTime = time;
 
                     FireRequest req = new FireRequest(time, zoneId, type, severity);
-                    log(String.format("[Fire] Fire detected at %s in Zone %d (%s severity)",
-                            time, zoneId, severity));
+                    log(String.format("[Fire] Fire detected at %s in Zone %d (%s severity)", time, zoneId, severity));
                     if (useUdp) {
                         String payload = String.format("REQ|%s|%d|%s|%s", time, zoneId, type, severity);
                         UdpUtil.send(schedulerHost, schedulerPort, payload);
@@ -128,7 +123,6 @@ public class FireIncidentSubsystem implements Runnable {
             return;
         }
 
-        // Phase 2: Wait for all completions from Scheduler
         int completionsReceived = 0;
         if (useUdp) {
             try (DatagramSocket socket = new DatagramSocket(completionPort)) {
@@ -136,7 +130,7 @@ public class FireIncidentSubsystem implements Runnable {
                     String msg = UdpUtil.receive(socket);
                     if (msg.startsWith("COMP|")) {
                         completionsReceived++;
-                        log("[Fire] ✓ Completion received via UDP: " + msg);
+                        log("[Fire] " + describeCompletionMessage(msg, completionsReceived, totalEventsSent));
                     }
                 }
             } catch (Exception e) {
@@ -150,10 +144,10 @@ public class FireIncidentSubsystem implements Runnable {
                 }
                 completionsReceived++;
                 if (ack.isResolved()) {
-                    log(String.format("[Fire] ✓ Confirmation received: Zone %d fire extinguished. (%d/%d)",
+                    log(String.format("[Fire] Confirmation received: Zone %d fire extinguished. (%d/%d)",
                             ack.getZoneId(), completionsReceived, totalEventsSent));
                 } else {
-                    log(String.format("[Fire] ✗ Zone %d fire NOT resolved. (%d/%d)",
+                    log(String.format("[Fire] Zone %d fire not resolved. (%d/%d)",
                             ack.getZoneId(), completionsReceived, totalEventsSent));
                 }
             }
@@ -167,5 +161,14 @@ public class FireIncidentSubsystem implements Runnable {
         if (gui != null) {
             gui.log(message);
         }
+    }
+
+    private String describeCompletionMessage(String msg, int receivedCount, int expectedCount) {
+        String[] parts = msg.split("\\|");
+        if (parts.length >= 3) {
+            return String.format("Completion received: Zone %s resolved=%s (%d/%d)",
+                    parts[1], parts[2], receivedCount, expectedCount);
+        }
+        return "Completion received via UDP: " + msg;
     }
 }

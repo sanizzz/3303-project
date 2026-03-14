@@ -4,7 +4,7 @@ import fire_incident_subsystem.FireRequest;
 
 /**
  * Represents drone hardware model and resource tracking.
- * Parameters are configurable for Iteration 2 experiments.
+ * Parameters are configurable for simulation and Iteration 3 testing.
  */
 public class Drone {
 
@@ -69,7 +69,7 @@ public class Drone {
     }
 
     public void setDroneDestination(double x, double y) {
-        // No-op in Iteration 2. Mission travel is managed by DroneSubsystem.
+        // Mission travel is managed by the drone execution engine.
     }
 
     public void refill() {

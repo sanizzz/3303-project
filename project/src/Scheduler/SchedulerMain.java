@@ -3,8 +3,8 @@ package Scheduler;
 import Drone_subsystem.Zone;
 import fire_incident_subsystem.FireRequest;
 import types.DispatchCommand;
-import types.DroneStatusUpdate;
 import types.DroneState;
+import types.DroneStatusUpdate;
 import types.EventType;
 import types.Mission;
 import types.Severity;
@@ -28,7 +28,8 @@ public class SchedulerMain {
         int droneStatusPort = parseIntArg(args, "--droneStatusPort", UdpConfig.DRONE_STATUS_PORT);
 
         String droneHost = getArg(args, "--droneHost", "localhost");
-        int droneCommandPort = parseIntArg(args, "--droneCommandPort", UdpConfig.SCHED_TO_DRONE_PORT);
+        int droneCommandBasePort = parseIntArg(args, "--droneCommandBasePort",
+                parseIntArg(args, "--droneCommandPort", UdpConfig.DRONE_COMMAND_BASE_PORT));
 
         String fireHost = getArg(args, "--fireHost", "localhost");
         int completionPort = parseIntArg(args, "--completionPort", UdpConfig.SCHED_TO_FIRE_PORT);
@@ -42,7 +43,7 @@ public class SchedulerMain {
         Thread droneStatusListener = new Thread(() -> runDroneStatusListener(scheduler, droneStatusPort),
                 "scheduler-drone-status-listener");
         Thread dispatchForwarder = new Thread(
-                () -> runDispatchForwarder(scheduler, droneHost, droneCommandPort),
+                () -> runDispatchForwarder(scheduler, droneHost, droneCommandBasePort),
                 "scheduler-dispatch-forwarder");
         Thread completionForwarder = new Thread(
                 () -> runCompletionForwarder(scheduler, fireHost, completionPort),
@@ -56,8 +57,12 @@ public class SchedulerMain {
         log("SchedulerMain running.");
         log("Fire listen port: " + firePort);
         log("Drone status listen port: " + droneStatusPort);
-        log("Drone command target: " + droneHost + ":" + droneCommandPort);
+        log("Drone command base target: " + droneHost + ":" + droneCommandBasePort);
         log("Completion target: " + fireHost + ":" + completionPort);
+        for (int droneId = 1; droneId <= Math.max(1, drones); droneId++) {
+            log("Expected Drone " + droneId + " command port: "
+                    + UdpConfig.commandPortForDrone(droneId, droneCommandBasePort));
+        }
     }
 
     private static void runFireListener(Scheduler scheduler, int firePort) {
@@ -94,7 +99,7 @@ public class SchedulerMain {
                     continue;
                 }
 
-                String[] p = msg.split("\\|", 8);
+                String[] p = msg.split("\\|", 9);
                 if (p.length < 7) {
                     log("[SchedulerMain] Bad STATUS payload: " + msg);
                     continue;
@@ -105,15 +110,30 @@ public class SchedulerMain {
                 int missionId = Integer.parseInt(p[3]);
                 double remainingAgent = Double.parseDouble(p[4]);
                 double remainingBattery = Double.parseDouble(p[5]);
-                String message = p[6];
 
-                DroneStatusUpdate update = new DroneStatusUpdate(
-                        droneId,
-                        state,
-                        missionId,
-                        remainingAgent,
-                        remainingBattery,
-                        message);
+                DroneStatusUpdate update;
+                if (p.length >= 9) {
+                    double positionX = Double.parseDouble(p[6]);
+                    double positionY = Double.parseDouble(p[7]);
+                    String message = p[8];
+                    update = new DroneStatusUpdate(
+                            droneId,
+                            state,
+                            missionId,
+                            remainingAgent,
+                            remainingBattery,
+                            positionX,
+                            positionY,
+                            message);
+                } else {
+                    update = new DroneStatusUpdate(
+                            droneId,
+                            state,
+                            missionId,
+                            remainingAgent,
+                            remainingBattery,
+                            p[6]);
+                }
                 scheduler.sendDroneStatusUpdate(update);
             }
         } catch (Exception e) {
@@ -121,7 +141,7 @@ public class SchedulerMain {
         }
     }
 
-    private static void runDispatchForwarder(Scheduler scheduler, String droneHost, int droneCommandPort) {
+    private static void runDispatchForwarder(Scheduler scheduler, String droneHost, int droneCommandBasePort) {
         while (!Thread.currentThread().isInterrupted()) {
             DispatchCommand cmd = scheduler.getNextDispatchCommand();
             if (cmd == null) {
@@ -149,7 +169,10 @@ public class SchedulerMain {
                         req.getSeverity());
             }
 
-            UdpUtil.send(droneHost, droneCommandPort, payload);
+            int targetPort = targetDroneId == 0
+                    ? droneCommandBasePort
+                    : UdpConfig.commandPortForDrone(targetDroneId, droneCommandBasePort);
+            UdpUtil.send(droneHost, targetPort, payload);
         }
     }
 

@@ -35,12 +35,12 @@ public class SimulationGUI extends JFrame {
     private final JButton startButton;
     private String selectedCsvFile;
 
-    // --- Iteration 2: Status display labels ---
+    // Iteration 3 status display labels
     private final JLabel droneStateLabel;
     private final JLabel activeFiresLabel;
 
     public SimulationGUI(Map<Integer, Zone> zoneMap) {
-        setTitle("Drone Fire Simulation (Iteration 2)");
+        setTitle("Drone Fire Simulation (Iteration 3)");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLayout(new BorderLayout(8, 8));
 
@@ -95,7 +95,7 @@ public class SimulationGUI extends JFrame {
         configPanel.add(loadButton);
         configPanel.add(startButton);
 
-        // Row 2: Status display (Iteration 2)
+        // Row 2: runtime status display
         JPanel statusPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 15, 4));
         statusPanel.setBorder(BorderFactory.createCompoundBorder(
                 BorderFactory.createMatteBorder(1, 0, 0, 0, Color.LIGHT_GRAY),
@@ -171,8 +171,7 @@ public class SimulationGUI extends JFrame {
         mapPanel.repaint();
     }
 
-    // ==================== ITERATION 2: THREAD-SAFE STATUS UPDATES
-    // ====================
+    // ==================== THREAD-SAFE STATUS UPDATES ====================
 
     /**
      * Updates the drone state display label. Thread-safe.
@@ -235,8 +234,7 @@ public class SimulationGUI extends JFrame {
         }
     }
 
-    // ==================== MAP PANEL (unchanged from Iteration 1)
-    // ====================
+    // ==================== MAP PANEL ====================
 
     private static class MapPanel extends JPanel {
         private static final int GRID_STEP = 100;
@@ -346,9 +344,9 @@ public class SimulationGUI extends JFrame {
                 g2.setColor(Color.DARK_GRAY);
                 String zoneLabel = "Z" + zone.getZoneID();
                 if (zState == Zone.ZoneState.ON_FIRE) {
-                    zoneLabel += " 🔥";
+                    zoneLabel += " [FIRE]";
                 } else if (zState == Zone.ZoneState.EXTINGUISHED) {
-                    zoneLabel += " ✓";
+                    zoneLabel += " [DONE]";
                 }
                 g2.drawString(zoneLabel, drawX + 6, drawY + 16);
             }
