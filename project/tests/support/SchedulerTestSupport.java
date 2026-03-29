@@ -10,6 +10,7 @@ import types.DispatchCommand;
 import types.DroneState;
 import types.DroneStatusUpdate;
 import types.EventType;
+import types.FaultType;
 import types.Severity;
 
 import java.time.LocalTime;
@@ -67,6 +68,20 @@ public abstract class SchedulerTestSupport {
 
     protected FireRequest request(int zoneId, Severity severity, int offsetSeconds) {
         return new FireRequest(BASE_TIME.plusSeconds(offsetSeconds), zoneId, EventType.FIRE_DETECTED, severity);
+    }
+
+    /**
+     * Builds a request with injected fault metadata so tests can exercise Iteration 4 flows.
+     */
+    protected FireRequest request(int zoneId, Severity severity, int offsetSeconds,
+            FaultType faultType, int faultTriggerSeconds) {
+        return new FireRequest(
+                BASE_TIME.plusSeconds(offsetSeconds),
+                zoneId,
+                EventType.FIRE_DETECTED,
+                severity,
+                faultType,
+                faultTriggerSeconds);
     }
 
     protected DroneStatusUpdate status(int droneId, DroneState state, int missionId,

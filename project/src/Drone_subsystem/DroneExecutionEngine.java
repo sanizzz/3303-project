@@ -3,6 +3,8 @@ package Drone_subsystem;
 import types.DispatchCommand;
 import types.DroneState;
 import types.DroneStatusUpdate;
+import types.FaultType;
+import types.LogUtil;
 import types.Mission;
 import types.UdpConfig;
 
@@ -11,13 +13,15 @@ import java.util.Map;
 import java.util.function.Consumer;
 
 /**
- * Shared drone execution loop used by both in-process and UDP launcher modes.
- * Commands can arrive while the drone is travelling, which allows safe reroutes.
+ * This class is the main drone loop.
+ * It runs the drone state changes and now also handles the Iteration 4 faults.
  */
 public class DroneExecutionEngine implements Runnable {
 
     private static final long COMMAND_WAIT_MS = 100L;
     private static final long TICK_MS = 100L;
+    private static final double SOFT_RESET_SECONDS = 6.0;
+    private static final double PACKET_RETRY_SECONDS = 2.0;
 
     private final int droneId;
     private final Map<Integer, Zone> zoneMap;
@@ -27,6 +31,7 @@ public class DroneExecutionEngine implements Runnable {
     private final Consumer<String> logSink;
 
     private final Object commandLock = new Object();
+    private final Object stateWaitLock = new Object();
     private final LinkedList<DispatchCommand> commandQueue = new LinkedList<>();
 
     private DroneState currentState = DroneState.IDLE;
@@ -34,6 +39,14 @@ public class DroneExecutionEngine implements Runnable {
     private double remainingDropSeconds;
     private int progressTickCounter;
 
+    private FaultType activeFaultType = FaultType.NONE;
+    private long faultDeadlineMs = -1L;
+    private boolean faultTriggered;
+    private long resetCompleteAtMs = -1L;
+
+    /**
+     * This sets up one drone engine with the map, time scale, and callback methods.
+     */
     public DroneExecutionEngine(int droneId, Map<Integer, Zone> zoneMap, int timeScale,
             Consumer<DroneStatusUpdate> statusSink, Consumer<String> logSink) {
         this.droneId = Math.max(1, droneId);
@@ -44,6 +57,9 @@ public class DroneExecutionEngine implements Runnable {
         this.drone = new Drone();
     }
 
+    /**
+     * This adds a new command into the drone's queue and wakes the drone thread up.
+     */
     public void submitCommand(DispatchCommand command) {
         if (command == null) {
             return;
@@ -54,13 +70,20 @@ public class DroneExecutionEngine implements Runnable {
         }
     }
 
+    /**
+     * Returns the current drone state.
+     */
     public DroneState getCurrentState() {
         return currentState;
     }
 
+    /**
+     * This is the main drone loop.
+     * It keeps checking for commands and moving the drone through its states.
+     */
     @Override
     public void run() {
-        log(String.format("[Drone-%d] Iteration 3 drone engine started. State=%s", droneId, currentState));
+        log(String.format("[Drone-%d] Iteration 4 drone engine started. State=%s", droneId, currentState));
 
         while (!Thread.currentThread().isInterrupted()) {
             DispatchCommand command = waitForCommandIfIdle();
@@ -69,20 +92,26 @@ public class DroneExecutionEngine implements Runnable {
                 drainExtraCommands();
             }
 
+            if (!hasActiveWork()) {
+                continue;
+            }
+
+            waitForNextSimulationStep();
+            if (Thread.currentThread().isInterrupted()) {
+                break;
+            }
+
             if (hasActiveWork()) {
                 advanceOneTick();
-                try {
-                    Thread.sleep(TICK_MS);
-                } catch (InterruptedException e) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
             }
         }
 
         log(String.format("[Drone-%d] Drone engine shutting down.", droneId));
     }
 
+    /**
+     * If the drone is idle, it waits here for the next command.
+     */
     private DispatchCommand waitForCommandIfIdle() {
         synchronized (commandLock) {
             if (commandQueue.isEmpty() && !hasActiveWork()) {
@@ -101,6 +130,9 @@ public class DroneExecutionEngine implements Runnable {
         }
     }
 
+    /**
+     * This processes any extra commands that were queued up, like reroutes.
+     */
     private void drainExtraCommands() {
         while (true) {
             DispatchCommand extra;
@@ -114,7 +146,18 @@ public class DroneExecutionEngine implements Runnable {
         }
     }
 
+    /**
+     * This handles a command sent by the scheduler.
+     * It can start a mission, reroute the drone, or send it back to base.
+     */
     private void handleCommand(DispatchCommand command) {
+        if (currentState == DroneState.OFFLINE) {
+            sendStatus(DroneState.OFFLINE, -1,
+                    "Hard fault already latched. Drone remains offline until simulation end.",
+                    FaultType.NOZZLE_JAMMED);
+            return;
+        }
+
         if (command.isReturnToBase()) {
             if (isAtHome() && activeMission == null) {
                 sendStatus(DroneState.IDLE, -1, "Already at base and ready for dispatch");
@@ -139,6 +182,7 @@ public class DroneExecutionEngine implements Runnable {
 
         Zone targetZone = zoneMap.get(mission.getZoneId());
         if (targetZone == null) {
+            clearFaultWindow();
             sendStatus(DroneState.IDLE, mission.getMissionId(), "Zone not found");
             return;
         }
@@ -156,6 +200,9 @@ public class DroneExecutionEngine implements Runnable {
                     droneId, mission.getMissionId(), mission.getZoneId()));
         }
 
+        // I copy the fault into the drone when it gets dispatched so the same mission
+        // does not keep failing again and again after being reassigned.
+        armFaultWindow(command);
         activeMission = mission;
         activeMission.getFireRequest().setInProgress(true);
         activeMission.getFireRequest().setResolved(false);
@@ -168,12 +215,29 @@ public class DroneExecutionEngine implements Runnable {
                 "Dispatch accepted, en route to Zone " + mission.getZoneId());
     }
 
+    /**
+     * This moves the drone forward by one step in the simulation.
+     */
     private void advanceOneTick() {
+        if (currentState == DroneState.RESETTING) {
+            advanceResetRecovery();
+            return;
+        }
+
+        if (currentState == DroneState.EN_ROUTE && shouldTriggerStuckFault()) {
+            triggerStuckMidFlightFault();
+            return;
+        }
+
         if (currentState == DroneState.EN_ROUTE) {
             advanceTravelToMission();
             return;
         }
         if (currentState == DroneState.DROPPING_AGENT) {
+            if (shouldTriggerNozzleJammedFault()) {
+                triggerNozzleJammedFault();
+                return;
+            }
             advanceDrop();
             return;
         }
@@ -182,8 +246,35 @@ public class DroneExecutionEngine implements Runnable {
         }
     }
 
+    /**
+     * This handles the short reset time after the stuck mid-flight soft fault.
+     */
+    private void advanceResetRecovery() {
+        if (activeMission == null) {
+            clearFaultWindow();
+            transitionTo(DroneState.IDLE, "RESET_WITHOUT_MISSION", -1);
+            return;
+        }
+
+        if (System.currentTimeMillis() < resetCompleteAtMs) {
+            return;
+        }
+
+        resetCompleteAtMs = -1L;
+        clearFaultWindow();
+        transitionTo(DroneState.EN_ROUTE, "RESET_COMPLETE", activeMission.getMissionId());
+        sendStatus(DroneState.EN_ROUTE, activeMission.getMissionId(),
+                "Reset complete, resuming trip to Zone " + activeMission.getZoneId());
+        log(String.format("[Drone-%d] Soft fault reset complete. Resuming Mission %d.",
+                droneId, activeMission.getMissionId()));
+    }
+
+    /**
+     * This moves the drone toward the fire zone and sends progress updates.
+     */
     private void advanceTravelToMission() {
         if (activeMission == null) {
+            clearFaultWindow();
             transitionTo(DroneState.IDLE, "NO_ACTIVE_MISSION", -1);
             return;
         }
@@ -192,6 +283,7 @@ public class DroneExecutionEngine implements Runnable {
         if (targetZone == null) {
             sendStatus(DroneState.IDLE, activeMission.getMissionId(), "Zone not found");
             activeMission = null;
+            clearFaultWindow();
             transitionTo(DroneState.IDLE, "MISSION_ABORTED", -1);
             return;
         }
@@ -210,8 +302,12 @@ public class DroneExecutionEngine implements Runnable {
         }
     }
 
+    /**
+     * This handles the water or foam drop once the drone reaches the zone.
+     */
     private void advanceDrop() {
         if (activeMission == null) {
+            clearFaultWindow();
             transitionTo(DroneState.IDLE, "NO_ACTIVE_MISSION", -1);
             return;
         }
@@ -244,6 +340,9 @@ public class DroneExecutionEngine implements Runnable {
         remainingDropSeconds = Drone.getTotalExtinguishingTime();
     }
 
+    /**
+     * This finishes the mission and tells the scheduler the fire is done.
+     */
     private void completeMission() {
         if (activeMission == null) {
             return;
@@ -259,6 +358,7 @@ public class DroneExecutionEngine implements Runnable {
         int missionId = activeMission.getMissionId();
         int zoneId = activeMission.getZoneId();
         activeMission = null;
+        clearFaultWindow();
 
         transitionTo(DroneState.IDLE, "MISSION_COMPLETE", missionId);
         sendStatus(DroneState.IDLE, missionId, "Mission complete, fire extinguished in Zone " + zoneId);
@@ -266,6 +366,9 @@ public class DroneExecutionEngine implements Runnable {
                 droneId, missionId, zoneId));
     }
 
+    /**
+     * This sends the drone back to base and refills it if needed.
+     */
     private void advanceReturnToBase() {
         int missionId = currentMissionId();
         boolean atBase = moveTowards(Drone.getHomeX(), Drone.getHomeY(), simulationSecondsPerTick());
@@ -289,11 +392,146 @@ public class DroneExecutionEngine implements Runnable {
             return;
         }
 
+        clearFaultWindow();
         transitionTo(DroneState.IDLE, "AT_BASE_REFILLED", missionId);
         sendStatus(DroneState.IDLE, missionId, "Returned to base, refilled and ready");
         log(String.format("[Drone-%d] At base. Refilled and ready for the next dispatch.", droneId));
     }
 
+    /**
+     * This sets up the fault timer for the current mission.
+     */
+    private void armFaultWindow(DispatchCommand command) {
+        activeFaultType = command.getFaultType() == null ? FaultType.NONE : command.getFaultType();
+        faultTriggered = activeFaultType == FaultType.NONE;
+        resetCompleteAtMs = -1L;
+        if (activeFaultType == FaultType.NONE) {
+            faultDeadlineMs = -1L;
+            return;
+        }
+
+        faultDeadlineMs = System.currentTimeMillis() + scaledMillisForSimulationSeconds(command.getFaultTriggerSeconds());
+        log(String.format("[Drone-%d] Fault armed for Mission %d: %s at +%ds simulated.",
+                droneId,
+                command.getMission() == null ? -1 : command.getMission().getMissionId(),
+                activeFaultType,
+                command.getFaultTriggerSeconds()));
+    }
+
+    /**
+     * This clears the current fault information after the mission changes state.
+     */
+    private void clearFaultWindow() {
+        activeFaultType = FaultType.NONE;
+        faultDeadlineMs = -1L;
+        faultTriggered = false;
+        resetCompleteAtMs = -1L;
+    }
+
+    /**
+     * This decides how long the drone thread should wait before the next step.
+     */
+    private long computeNextWaitMs() {
+        if (currentState == DroneState.RESETTING && resetCompleteAtMs > 0) {
+            return Math.max(1L, resetCompleteAtMs - System.currentTimeMillis());
+        }
+
+        if (currentState == DroneState.EN_ROUTE
+                && activeFaultType == FaultType.STUCK_MID_FLIGHT
+                && !faultTriggered
+                && faultDeadlineMs > 0) {
+            long remainingFaultMs = faultDeadlineMs - System.currentTimeMillis();
+            if (remainingFaultMs <= 0) {
+                return 0L;
+            }
+            return Math.min(TICK_MS, remainingFaultMs);
+        }
+
+        return TICK_MS;
+    }
+
+    /**
+     * This is the timed wait used in the drone loop.
+     * I used wait(timeout) here so the fault timing works without freezing the scheduler.
+     */
+    private void waitForNextSimulationStep() {
+        long waitMs = computeNextWaitMs();
+        if (waitMs <= 0) {
+            return;
+        }
+        timedStateWait(waitMs);
+    }
+
+    /**
+     * Checks if the stuck mid-flight fault should happen now.
+     */
+    private boolean shouldTriggerStuckFault() {
+        return activeMission != null
+                && currentState == DroneState.EN_ROUTE
+                && activeFaultType == FaultType.STUCK_MID_FLIGHT
+                && !faultTriggered
+                && faultDeadlineReached();
+    }
+
+    /**
+     * This runs the stuck mid-flight soft fault.
+     * The drone resets and then keeps working on the same mission.
+     */
+    private void triggerStuckMidFlightFault() {
+        if (activeMission == null) {
+            return;
+        }
+
+        faultTriggered = true;
+        resetCompleteAtMs = System.currentTimeMillis() + scaledMillisForSimulationSeconds(SOFT_RESET_SECONDS);
+        transitionTo(DroneState.RESETTING, "STUCK_MID_FLIGHT", activeMission.getMissionId());
+        sendStatus(DroneState.RESETTING, activeMission.getMissionId(),
+                "Stuck mid-flight detected. Drone resetting before retry.", FaultType.STUCK_MID_FLIGHT);
+        log(String.format("[Drone-%d] Soft fault triggered during Mission %d. Resetting in place.",
+                droneId, activeMission.getMissionId()));
+    }
+
+    /**
+     * Checks if the nozzle jam hard fault should happen now.
+     */
+    private boolean shouldTriggerNozzleJammedFault() {
+        return activeMission != null
+                && currentState == DroneState.DROPPING_AGENT
+                && activeFaultType == FaultType.NOZZLE_JAMMED
+                && !faultTriggered
+                && faultDeadlineReached();
+    }
+
+    /**
+     * This runs the nozzle jam hard fault.
+     * The drone goes offline and the scheduler can give the mission to another drone.
+     */
+    private void triggerNozzleJammedFault() {
+        if (activeMission == null) {
+            return;
+        }
+
+        int missionId = activeMission.getMissionId();
+        int zoneId = activeMission.getZoneId();
+        activeMission.getFireRequest().setInProgress(false);
+        activeMission.getFireRequest().setResolved(false);
+        faultTriggered = true;
+
+        transitionTo(DroneState.OFFLINE, "NOZZLE_JAMMED", missionId);
+        sendStatus(DroneState.OFFLINE, missionId,
+                "Nozzle jam detected at Zone " + zoneId + ". Drone offline for remainder of run.",
+                FaultType.NOZZLE_JAMMED);
+        log(String.format("[Drone-%d] Hard fault triggered on Mission %d. Drone is now offline.",
+                droneId, missionId));
+
+        activeMission = null;
+        remainingDropSeconds = 0;
+        clearFaultWindow();
+    }
+
+    /**
+     * This moves the drone a small amount toward a target position.
+     */
     private boolean moveTowards(double targetX, double targetY, double simulationSeconds) {
         double distance = drone.distanceTo(targetX, targetY);
         if (distance <= 0.0001) {
@@ -317,23 +555,54 @@ public class DroneExecutionEngine implements Runnable {
         return false;
     }
 
+    /**
+     * Converts one real tick into simulated time.
+     */
     private double simulationSecondsPerTick() {
         return (TICK_MS / 1000.0) * timeScale;
     }
 
-    private boolean hasActiveWork() {
-        return activeMission != null || currentState == DroneState.RETURNING;
+    /**
+     * Converts simulated seconds into the real wait time.
+     */
+    private long scaledMillisForSimulationSeconds(double simulationSeconds) {
+        return Math.max(1L, Math.round((simulationSeconds * 1000.0) / timeScale));
     }
 
+    /**
+     * Checks if the drone still has work to do.
+     */
+    private boolean hasActiveWork() {
+        return activeMission != null
+                || currentState == DroneState.RETURNING
+                || currentState == DroneState.RESETTING;
+    }
+
+    /**
+     * Checks if the drone is already back at base.
+     */
     private boolean isAtHome() {
         return Math.abs(drone.positionX - Drone.getHomeX()) < 0.0001
                 && Math.abs(drone.positionY - Drone.getHomeY()) < 0.0001;
     }
 
+    /**
+     * Returns the current mission id, or -1 if there is no mission.
+     */
     private int currentMissionId() {
         return activeMission == null ? -1 : activeMission.getMissionId();
     }
 
+    /**
+     * Checks if the fault timer has reached its limit.
+     */
+    private boolean faultDeadlineReached() {
+        return faultDeadlineMs >= 0 && System.currentTimeMillis() >= faultDeadlineMs;
+    }
+
+    /**
+     * This updates the drone state and writes it to the log.
+     */
     private void transitionTo(DroneState newState, String event, int missionId) {
         DroneState oldState = currentState;
         currentState = newState;
@@ -341,7 +610,28 @@ public class DroneExecutionEngine implements Runnable {
                 droneId, oldState, event, newState, missionId));
     }
 
+    /**
+     * Sends a normal status update.
+     */
     private void sendStatus(DroneState state, int missionId, String message) {
+        sendStatus(state, missionId, message, FaultType.NONE);
+    }
+
+    /**
+     * Sends a status update, and if needed, it also triggers the packet loss fault.
+     */
+    private void sendStatus(DroneState state, int missionId, String message, FaultType faultType) {
+        if (faultType == FaultType.NONE && shouldInjectPacketLoss()) {
+            injectPacketLossAndRetry(state, missionId, message);
+            return;
+        }
+        emitStatus(state, missionId, message, faultType);
+    }
+
+    /**
+     * This creates the status object and sends it to the scheduler.
+     */
+    private void emitStatus(DroneState state, int missionId, String message, FaultType faultType) {
         statusSink.accept(new DroneStatusUpdate(
                 droneId,
                 state,
@@ -350,9 +640,38 @@ public class DroneExecutionEngine implements Runnable {
                 drone.getRemainingBattery(),
                 drone.positionX,
                 drone.positionY,
-                message));
+                message,
+                faultType));
     }
 
+    /**
+     * Checks if the packet loss fault should happen on the next message.
+     */
+    private boolean shouldInjectPacketLoss() {
+        return activeMission != null
+                && activeFaultType == FaultType.PACKET_LOSS
+                && !faultTriggered
+                && faultDeadlineReached();
+    }
+
+    /**
+     * This simulates packet loss by sending a fault update first and then retrying.
+     */
+    private void injectPacketLossAndRetry(DroneState state, int missionId, String message) {
+        faultTriggered = true;
+        emitStatus(state, missionId,
+                "Packet loss/corruption detected. Retrying previous message after timeout.",
+                FaultType.PACKET_LOSS);
+        timedStateWait(scaledMillisForSimulationSeconds(PACKET_RETRY_SECONDS));
+        emitStatus(state, missionId, message + " [retried after packet loss]", FaultType.NONE);
+        log(String.format("[Drone-%d] Packet loss injected for Mission %d, retry completed.",
+                droneId, missionId));
+        clearFaultWindow();
+    }
+
+    /**
+     * This only sends travel updates every few ticks so the logs do not get too noisy.
+     */
     private void sendProgressStatus(DroneState state, int missionId, String message) {
         progressTickCounter++;
         int interval = Math.max(1, UdpConfig.PROGRESS_STATUS_EVERY_N_TICKS);
@@ -362,7 +681,23 @@ public class DroneExecutionEngine implements Runnable {
         sendStatus(state, missionId, message);
     }
 
+    /**
+     * This is the helper used for timed waiting inside the drone thread.
+     */
+    private void timedStateWait(long waitMs) {
+        synchronized (stateWaitLock) {
+            try {
+                stateWaitLock.wait(waitMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+            }
+        }
+    }
+
+    /**
+     * This adds a timestamp to drone log messages.
+     */
     private void log(String message) {
-        logSink.accept(message);
+        logSink.accept(LogUtil.stamp(message));
     }
 }

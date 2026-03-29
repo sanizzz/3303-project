@@ -1,6 +1,7 @@
 package gui;
 
 import Drone_subsystem.Zone;
+import types.FaultType;
 
 import javax.swing.BorderFactory;
 import javax.swing.JButton;
@@ -23,6 +24,7 @@ import java.awt.Graphics;
 import java.awt.Graphics2D;
 import java.awt.RenderingHints;
 import java.io.File;
+import java.util.LinkedHashMap;
 import java.util.Map;
 
 public class SimulationGUI extends JFrame {
@@ -38,9 +40,11 @@ public class SimulationGUI extends JFrame {
     // Iteration 3 status display labels
     private final JLabel droneStateLabel;
     private final JLabel activeFiresLabel;
+    private final JPanel droneFleetPanel;
+    private final Map<Integer, JLabel> droneStatusById;
 
     public SimulationGUI(Map<Integer, Zone> zoneMap) {
-        setTitle("Drone Fire Simulation (Iteration 3)");
+        setTitle("Drone Fire Simulation (Iteration 4 - Fault Handling)");
         setDefaultCloseOperation(JFrame.EXIT_ON_CLOSE);
         setLayout(new BorderLayout(8, 8));
 
@@ -59,6 +63,10 @@ public class SimulationGUI extends JFrame {
         activeFiresLabel.setFont(new Font("SansSerif", Font.BOLD, 13));
         activeFiresLabel.setForeground(new Color(180, 0, 0));
 
+        droneFleetPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 8, 6));
+        droneFleetPanel.setBorder(BorderFactory.createTitledBorder("Drone Fleet Status"));
+        droneStatusById = new LinkedHashMap<>();
+
         add(buildTopPanel(), BorderLayout.NORTH);
 
         mapPanel = new MapPanel(zoneMap);
@@ -74,10 +82,16 @@ public class SimulationGUI extends JFrame {
         setSize(1100, 850);
         setLocationRelativeTo(null);
         setVisible(true);
+        setConfiguredDroneCount(1);
     }
 
+    /**
+     * This builds the top part of the GUI.
+     * I added the drone fleet panel here so faults are easy to see during the demo.
+     */
     private JPanel buildTopPanel() {
-        JPanel topContainer = new JPanel(new BorderLayout());
+        JPanel topContainer = new JPanel();
+        topContainer.setLayout(new javax.swing.BoxLayout(topContainer, javax.swing.BoxLayout.Y_AXIS));
 
         // Row 1: Configuration controls
         JPanel configPanel = new JPanel(new FlowLayout(FlowLayout.LEFT, 10, 8));
@@ -105,8 +119,9 @@ public class SimulationGUI extends JFrame {
         statusPanel.add(createSeparator());
         statusPanel.add(createStatusBlock("Active Fires:", activeFiresLabel));
 
-        topContainer.add(configPanel, BorderLayout.NORTH);
-        topContainer.add(statusPanel, BorderLayout.SOUTH);
+        topContainer.add(configPanel);
+        topContainer.add(statusPanel);
+        topContainer.add(droneFleetPanel);
 
         return topContainer;
     }
@@ -174,6 +189,114 @@ public class SimulationGUI extends JFrame {
     // ==================== THREAD-SAFE STATUS UPDATES ====================
 
     /**
+     * This updates the number of drone status labels shown on the screen.
+     * It is thread-safe because scheduler updates do not always come from the Swing thread.
+     */
+    public void setConfiguredDroneCount(int count) {
+        Runnable task = () -> {
+            int safeCount = Math.max(1, count);
+            for (int droneId = 1; droneId <= safeCount; droneId++) {
+                ensureDroneLabel(droneId);
+            }
+
+            droneStatusById.entrySet().removeIf(entry -> entry.getKey() > safeCount);
+            droneFleetPanel.removeAll();
+            for (int droneId = 1; droneId <= safeCount; droneId++) {
+                droneFleetPanel.add(droneStatusById.get(droneId));
+            }
+            droneFleetPanel.revalidate();
+            droneFleetPanel.repaint();
+        };
+
+        if (SwingUtilities.isEventDispatchThread()) {
+            task.run();
+        } else {
+            SwingUtilities.invokeLater(task);
+        }
+    }
+
+    /**
+     * This updates one drone label with its current state and fault.
+     * The colors match the assignment requirement for different faults.
+     */
+    public void updateDroneStatus(int droneId, String state, FaultType faultType, String note) {
+        Runnable task = () -> {
+            JLabel label = ensureDroneLabel(droneId);
+            FaultType safeFault = faultType == null ? FaultType.NONE : faultType;
+            String safeNote = (note == null || note.isBlank()) ? "Ready" : note;
+            label.setText(String.format("Drone %d | %s | %s", droneId, state, safeNote));
+            applyDroneLabelColors(label, state, safeFault);
+        };
+
+        if (SwingUtilities.isEventDispatchThread()) {
+            task.run();
+        } else {
+            SwingUtilities.invokeLater(task);
+        }
+    }
+
+    /**
+     * This creates a label for a drone if it does not already exist.
+     */
+    private JLabel ensureDroneLabel(int droneId) {
+        JLabel label = droneStatusById.get(droneId);
+        if (label != null) {
+            return label;
+        }
+
+        JLabel created = new JLabel("Drone " + droneId + " | IDLE | Ready");
+        created.setOpaque(true);
+        created.setFont(new Font("SansSerif", Font.BOLD, 12));
+        created.setBorder(BorderFactory.createCompoundBorder(
+                BorderFactory.createLineBorder(new Color(180, 180, 180)),
+                BorderFactory.createEmptyBorder(6, 10, 6, 10)));
+        applyDroneLabelColors(created, "IDLE", FaultType.NONE);
+        droneStatusById.put(droneId, created);
+        return created;
+    }
+
+    /**
+     * This sets the colour of the drone label based on its state or fault.
+     */
+    private void applyDroneLabelColors(JLabel label, String state, FaultType faultType) {
+        if (faultType == FaultType.NOZZLE_JAMMED) {
+            label.setBackground(new Color(198, 40, 40));
+            label.setForeground(Color.WHITE);
+            return;
+        }
+        if (faultType == FaultType.STUCK_MID_FLIGHT) {
+            label.setBackground(new Color(245, 124, 0));
+            label.setForeground(Color.WHITE);
+            return;
+        }
+        if (faultType == FaultType.PACKET_LOSS) {
+            label.setBackground(new Color(253, 216, 53));
+            label.setForeground(Color.BLACK);
+            return;
+        }
+
+        if ("OFFLINE".equals(state)) {
+            label.setBackground(new Color(198, 40, 40));
+            label.setForeground(Color.WHITE);
+        } else if ("RESETTING".equals(state)) {
+            label.setBackground(new Color(255, 183, 77));
+            label.setForeground(Color.BLACK);
+        } else if ("EN ROUTE".equals(state)) {
+            label.setBackground(new Color(187, 222, 251));
+            label.setForeground(Color.BLACK);
+        } else if ("DROPPING AGENT".equals(state)) {
+            label.setBackground(new Color(255, 224, 178));
+            label.setForeground(Color.BLACK);
+        } else if ("RETURNING".equals(state)) {
+            label.setBackground(new Color(225, 190, 231));
+            label.setForeground(Color.BLACK);
+        } else {
+            label.setBackground(new Color(200, 230, 201));
+            label.setForeground(Color.BLACK);
+        }
+    }
+
+    /**
      * Updates the drone state display label. Thread-safe.
      */
     public void setDroneState(String state) {
@@ -192,6 +315,12 @@ public class SimulationGUI extends JFrame {
                     break;
                 case "RETURNING":
                     droneStateLabel.setForeground(new Color(128, 0, 128));
+                    break;
+                case "RESETTING":
+                    droneStateLabel.setForeground(new Color(230, 120, 0));
+                    break;
+                case "OFFLINE":
+                    droneStateLabel.setForeground(new Color(180, 0, 0));
                     break;
                 default:
                     droneStateLabel.setForeground(Color.DARK_GRAY);

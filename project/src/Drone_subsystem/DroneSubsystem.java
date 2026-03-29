@@ -8,8 +8,8 @@ import types.DroneStatusUpdate;
 import java.util.Map;
 
 /**
- * In-process drone subsystem used by GUI mode.
- * Commands are still consumed through the Scheduler queue, but execution supports reroutes while travelling.
+ * This is the local drone subsystem used when everything runs in the same program.
+ * It still gets commands from the scheduler and sends status updates back.
  */
 public class DroneSubsystem implements Runnable {
 
@@ -67,11 +67,12 @@ public class DroneSubsystem implements Runnable {
         }
     }
 
+    /**
+     * This sends the drone update back to the scheduler.
+     * I keep the scheduler in charge of the GUI updates so all drone info is handled in one place.
+     */
     private void forwardStatus(DroneStatusUpdate update) {
         scheduler.sendDroneStatusUpdate(update);
-        if (gui != null) {
-            gui.setDroneState(update.getDroneState().toString());
-        }
     }
 
     private void log(String message) {

@@ -7,17 +7,27 @@ participant "SchedulerMain\n(UDP adapter)" as SchedulerMain
 participant "Scheduler\n(core)" as Scheduler
 participant "Drone Subsystem\n(UDP listener + engine)" as Drone
 
+note right of Scheduler
+  SchedulerMain waits inside getNextDispatchCommand()
+  and Fire waits inside getCompletion() using wait().
+  sendDroneStatusUpdate(update) adds to statusUpdateQueue
+  and wakes the scheduler loop with notifyAll().
+  The scheduler also uses notifyAll() after it queues
+  a DispatchCommand or a completion.
+end note
+
 == Incident Input ==
-Fire -> SchedulerMain : UDP REQ|time|zone|type|severity
+Fire -> SchedulerMain : UDP REQ|time|zone|type|severity|faultType|faultTriggerSeconds
 activate SchedulerMain
 SchedulerMain -> Scheduler : putRequest(FireRequest)
 activate Scheduler
 Scheduler -> Scheduler : enqueueMission()
-Scheduler -> Scheduler : evaluate queued missions,\nseverity, ETA, battery, and reroute rules
+Scheduler -> Scheduler : check queued missions,\nseverity, ETA, battery, and reroute rules
 alt feasible dispatch exists
-  Scheduler -> Scheduler : queue DispatchCommand
+  Scheduler -> Scheduler : buildDispatchCommand(droneId, mission)\nconsumePendingFault() from FireRequest
+  Scheduler -> Scheduler : queue DispatchCommand\nnotifyAll()
 else no feasible drone yet
-  Scheduler -> Scheduler : keep mission queued
+  Scheduler -> Scheduler : leave mission in the ready queue
 end
 deactivate Scheduler
 deactivate SchedulerMain
@@ -27,36 +37,90 @@ SchedulerMain -> Scheduler : getNextDispatchCommand()
 activate Scheduler
 Scheduler --> SchedulerMain : DispatchCommand
 deactivate Scheduler
+note over SchedulerMain,Scheduler
+  getNextDispatchCommand() waits until dispatchQueue has work.
+  assignMission() and handleHardFault() both call notifyAll()
+  so the waiting thread can continue.
+end note
 alt mission dispatch
-  SchedulerMain -> Drone : UDP CMD|DISPATCH|droneId|mission...
+  SchedulerMain -> Drone : UDP CMD|DISPATCH|droneId|mission|faultType|faultTriggerSeconds
 else queue drained and drone away from base
   SchedulerMain -> Drone : UDP CMD|RETURN|droneId
 end
 
 == Mission Execution ==
 activate Drone
-Drone -> Drone : decode command and start mission
+Drone -> Drone : read the command and armFaultWindow(command)
 
 loop while mission remains active
-  alt progress update while travelling or returning
+  Drone -> Drone : timedStateWait(waitMs)\nstateWaitLock.wait(timeout)
+
+  alt normal progress update while travelling or returning
     Drone -> SchedulerMain : UDP STATUS|...|EN_ROUTE / RETURNING|...
     SchedulerMain -> Scheduler : sendDroneStatusUpdate(update)
     activate Scheduler
-    Scheduler -> Scheduler : record location and state
-    Scheduler -> Scheduler : evaluate reroute and next dispatch opportunities
+    Scheduler -> Scheduler : save location, state, and fault info
+    Scheduler -> Scheduler : check for reroutes and next dispatches
     deactivate Scheduler
+  else stuck mid-flight soft fault
+    Drone -> Drone : triggerStuckMidFlightFault()
+    Drone -> SchedulerMain : UDP STATUS|...|RESETTING|...|STUCK_MID_FLIGHT
+    SchedulerMain -> Scheduler : sendDroneStatusUpdate(update)
+    activate Scheduler
+    Scheduler -> Scheduler : keep mission inProgressByMissionId
+    Scheduler -> Scheduler : set droneStateById[droneId] = RESETTING
+    deactivate Scheduler
+
+    Drone -> Drone : timedStateWait(resetWaitMs)\nstateWaitLock.wait(timeout)
+    Drone -> SchedulerMain : UDP STATUS|...|EN_ROUTE|...|fault cleared
+    SchedulerMain -> Scheduler : sendDroneStatusUpdate(update)
+    activate Scheduler
+    Scheduler -> Scheduler : clearDroneFault(droneId, message)
+    Scheduler -> Scheduler : keep the same mission active\nwithout re-queueing it
+    deactivate Scheduler
+
+  else nozzle jammed hard fault
+    Drone -> Drone : triggerNozzleJammedFault()
+    Drone -> SchedulerMain : UDP STATUS|...|OFFLINE|...|NOZZLE_JAMMED
+    SchedulerMain -> Scheduler : sendDroneStatusUpdate(update)
+    activate Scheduler
+    Scheduler -> Scheduler : handleHardFault(droneId, mission, update)
+    Scheduler -> Scheduler : missionQueue.addFirst(mission)\nactiveMissionByDroneId.remove(droneId)
+    Scheduler -> Scheduler : set droneStateById[droneId] = OFFLINE
+    Scheduler -> Scheduler : dispatchNextIfPossible()\nnotifyAll()
+    alt another drone is idle
+      Scheduler --> SchedulerMain : DispatchCommand for the re-queued mission
+      SchedulerMain -> Drone : UDP CMD|DISPATCH|otherDrone|same mission...
+    else no replacement drone yet
+      Scheduler -> Scheduler : leave mission in the ready queue
+    end
+    deactivate Scheduler
+
+  else packet loss / corrupted message
+    Drone -> SchedulerMain : UDP STATUS|...|fault=PACKET_LOSS
+    SchedulerMain -> Scheduler : sendDroneStatusUpdate(update)
+    activate Scheduler
+    Scheduler -> Scheduler : mark packet loss and wait for the retry
+    deactivate Scheduler
+
+    Drone -> Drone : injectPacketLossAndRetry(...)\ntimedStateWait(PACKET_RETRY_SECONDS)
+    loop retry once
+      Drone -> SchedulerMain : UDP STATUS|...|[retried after packet loss]
+      SchedulerMain -> Scheduler : sendDroneStatusUpdate(update)
+    end
+
   else arrival, refill, or mission-complete event
     Drone -> SchedulerMain : UDP STATUS|...|DROPPING_AGENT / IDLE|...
     SchedulerMain -> Scheduler : sendDroneStatusUpdate(update)
     activate Scheduler
     alt mission completed
-      Scheduler -> Scheduler : mark mission completed
-      Scheduler -> Scheduler : queue completion and next dispatch/return decision
+      Scheduler -> Scheduler : mark the mission completed
+      Scheduler -> Scheduler : queue the completion and next dispatch/return decision
     else reroute opportunity created by new request
-      Scheduler -> Scheduler : replace active mission for en-route drone
-      Scheduler -> Scheduler : queue updated DispatchCommand
+      Scheduler -> Scheduler : replace the active mission for the en-route drone
+      Scheduler -> Scheduler : queue the updated DispatchCommand
     else refill/continuation required
-      Scheduler -> Scheduler : keep mission active and await resumed trip
+      Scheduler -> Scheduler : keep the mission active and wait for the next trip
     end
     deactivate Scheduler
   end

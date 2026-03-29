@@ -8,7 +8,9 @@ public enum DroneState {
     IDLE,
     EN_ROUTE,
     DROPPING_AGENT,
-    RETURNING;
+    RETURNING,
+    RESETTING,
+    OFFLINE;
 
     @Override
     public String toString() {

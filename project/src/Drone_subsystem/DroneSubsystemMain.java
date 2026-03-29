@@ -3,6 +3,8 @@ package Drone_subsystem;
 import fire_incident_subsystem.FireRequest;
 import types.DispatchCommand;
 import types.EventType;
+import types.FaultType;
+import types.LogUtil;
 import types.Mission;
 import types.Severity;
 import types.UdpConfig;
@@ -96,17 +98,19 @@ public class DroneSubsystemMain {
             LocalTime time = LocalTime.parse(p[5]);
             EventType type = EventType.valueOf(p[6]);
             Severity severity = Severity.valueOf(p[7]);
+            FaultType faultType = p.length >= 9 ? FaultType.fromText(p[8]) : FaultType.NONE;
+            int faultTriggerSeconds = p.length >= 10 ? Integer.parseInt(p[9]) : 0;
 
-            FireRequest req = new FireRequest(time, zoneId, type, severity);
+            FireRequest req = new FireRequest(time, zoneId, type, severity, faultType, faultTriggerSeconds);
             Mission mission = new Mission(missionId, req);
-            return DispatchCommand.dispatch(droneId, mission);
+            return DispatchCommand.dispatch(droneId, mission, faultType, faultTriggerSeconds);
         }
 
         return null;
     }
 
     private static void sendStatus(String host, int port, types.DroneStatusUpdate update) {
-        String payload = String.format("STATUS|%d|%s|%d|%.3f|%.3f|%.3f|%.3f|%s",
+        String payload = String.format("STATUS|%d|%s|%d|%.3f|%.3f|%.3f|%.3f|%s|%s",
                 update.getDroneId(),
                 update.getDroneState().name(),
                 update.getMissionId(),
@@ -114,7 +118,8 @@ public class DroneSubsystemMain {
                 update.getRemainingBattery(),
                 update.getPositionX(),
                 update.getPositionY(),
-                update.getMessage());
+                update.getMessage(),
+                update.getFaultType().name());
         UdpUtil.send(host, port, payload);
     }
 
@@ -144,6 +149,10 @@ public class DroneSubsystemMain {
     }
 
     private static void log(int droneId, String msg) {
-        System.out.println("[DroneMain-" + droneId + "] " + msg);
+        if (msg != null && msg.startsWith("[")) {
+            System.out.println(msg);
+            return;
+        }
+        System.out.println(LogUtil.stamp("[DroneMain-" + droneId + "] " + msg));
     }
 }

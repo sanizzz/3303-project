@@ -6,6 +6,8 @@ import types.DispatchCommand;
 import types.DroneState;
 import types.DroneStatusUpdate;
 import types.EventType;
+import types.FaultType;
+import types.LogUtil;
 import types.Mission;
 import types.Severity;
 import types.UdpConfig;
@@ -83,7 +85,9 @@ public class SchedulerMain {
                         LocalTime.parse(p[1]),
                         Integer.parseInt(p[2]),
                         EventType.valueOf(p[3]),
-                        Severity.valueOf(p[4]));
+                        Severity.valueOf(p[4]),
+                        p.length >= 6 ? FaultType.fromText(p[5]) : FaultType.NONE,
+                        p.length >= 7 ? Integer.parseInt(p[6]) : 0);
                 scheduler.putRequest(req);
             }
         } catch (Exception e) {
@@ -99,7 +103,7 @@ public class SchedulerMain {
                     continue;
                 }
 
-                String[] p = msg.split("\\|", 9);
+                String[] p = msg.split("\\|", 10);
                 if (p.length < 7) {
                     log("[SchedulerMain] Bad STATUS payload: " + msg);
                     continue;
@@ -116,6 +120,7 @@ public class SchedulerMain {
                     double positionX = Double.parseDouble(p[6]);
                     double positionY = Double.parseDouble(p[7]);
                     String message = p[8];
+                    FaultType faultType = p.length >= 10 ? FaultType.fromText(p[9]) : FaultType.NONE;
                     update = new DroneStatusUpdate(
                             droneId,
                             state,
@@ -124,7 +129,8 @@ public class SchedulerMain {
                             remainingBattery,
                             positionX,
                             positionY,
-                            message);
+                            message,
+                            faultType);
                 } else {
                     update = new DroneStatusUpdate(
                             droneId,
@@ -159,14 +165,27 @@ public class SchedulerMain {
                     continue;
                 }
                 FireRequest req = mission.getFireRequest();
-                payload = String.format(
-                        "CMD|DISPATCH|%d|%d|%d|%s|%s|%s",
-                        targetDroneId,
-                        mission.getMissionId(),
-                        req.getZoneId(),
-                        req.getTime(),
-                        req.getType(),
-                        req.getSeverity());
+                if (cmd.getFaultType() == FaultType.NONE) {
+                    payload = String.format(
+                            "CMD|DISPATCH|%d|%d|%d|%s|%s|%s",
+                            targetDroneId,
+                            mission.getMissionId(),
+                            req.getZoneId(),
+                            req.getTime(),
+                            req.getType(),
+                            req.getSeverity());
+                } else {
+                    payload = String.format(
+                            "CMD|DISPATCH|%d|%d|%d|%s|%s|%s|%s|%d",
+                            targetDroneId,
+                            mission.getMissionId(),
+                            req.getZoneId(),
+                            req.getTime(),
+                            req.getType(),
+                            req.getSeverity(),
+                            cmd.getFaultType().name(),
+                            cmd.getFaultTriggerSeconds());
+                }
             }
 
             int targetPort = targetDroneId == 0
@@ -205,6 +224,7 @@ public class SchedulerMain {
     }
 
     private static void log(String msg) {
-        System.out.println("[SchedulerMain] " + msg);
+        String formatted = (msg != null && msg.startsWith("[")) ? msg : "[SchedulerMain] " + msg;
+        System.out.println(LogUtil.stamp(formatted));
     }
 }

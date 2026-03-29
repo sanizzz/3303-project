@@ -1,6 +1,7 @@
 package fire_incident_subsystem;
 
 import types.UdpConfig;
+import types.LogUtil;
 
 /**
  * Separate-process launcher for Fire Incident subsystem (UDP mode).
@@ -24,7 +25,7 @@ public class FireIncidentSubsystemMain {
                 schedulerPort,
                 completionPort);
 
-        System.out.println("[FireMain] Starting with CSV: " + csv);
+        System.out.println(LogUtil.stamp("[FireMain] Starting with CSV: " + csv));
         fire.run();
     }
 

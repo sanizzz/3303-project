@@ -4,6 +4,7 @@ import Scheduler.Scheduler;
 import fire_incident_subsystem.FireIncidentSubsystem;
 import fire_incident_subsystem.FireRequest;
 import org.junit.jupiter.api.Test;
+import types.FaultType;
 import types.UdpUtil;
 
 import java.net.DatagramSocket;
@@ -122,6 +123,32 @@ class FireIncidentSubsystemTest {
                     "REQ|12:00:10|3|FIRE_DETECTED|LOW"),
                     receivedRequests);
         }
+    }
+
+    @Test
+    void readsOptionalFaultColumnsWithoutBreakingOldCsvFlow() {
+        // Iteration 4 keeps the CSV producer-consumer contract backward-compatible while adding
+        // one optional fault type and timeout column pair for injected fault scenarios.
+        RecordingScheduler scheduler = new RecordingScheduler();
+        FireIncidentSubsystem subsystem = new FireIncidentSubsystem(
+                scheduler,
+                null,
+                resolveSampleCsv("test_fault_scenario.csv"),
+                1000);
+
+        subsystem.run();
+
+        List<FireRequest> submitted = scheduler.getSubmittedRequests();
+        assertEquals(3, submitted.size());
+
+        assertEquals(FaultType.STUCK_MID_FLIGHT, submitted.get(0).getInjectedFaultType());
+        assertEquals(5, submitted.get(0).getFaultTriggerSeconds());
+
+        assertEquals(FaultType.NOZZLE_JAMMED, submitted.get(1).getInjectedFaultType());
+        assertEquals(0, submitted.get(1).getFaultTriggerSeconds());
+
+        assertEquals(FaultType.PACKET_LOSS, submitted.get(2).getInjectedFaultType());
+        assertEquals(2, submitted.get(2).getFaultTriggerSeconds());
     }
 
     private String resolveSampleCsv(String fileName) {

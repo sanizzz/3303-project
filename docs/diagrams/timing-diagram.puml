@@ -1,0 +1,114 @@
+@startuml
+title Iteration 4 Timing Diagram (Main.TIME_SCALE = 20, real milliseconds)
+
+note top
+  Each time block below is a separate example run.
+  Time markers are real milliseconds based on Main.TIME_SCALE = 20.
+  Scheduler.run() uses wait(200).
+  DroneExecutionEngine uses TICK_MS = 100, SOFT_RESET_SECONDS = 6.0,
+  and PACKET_RETRY_SECONDS = 2.0.
+end note
+
+robust "Fire_Subsystem" as Fire
+robust "Scheduler" as Scheduler
+robust "Drone_1" as D1
+
+@0
+Fire is RUNNING
+Scheduler is IDLE
+D1 is IDLE
+
+Fire@0 <-> @700 : Scenario 1\nStuck Mid-Flight
+Scheduler@0 <-> @100 : putRequest(req) calls notifyAll()\nand wakes Scheduler.run() from wait(200)
+D1@0 <-> @100 : commandLock.wait(COMMAND_WAIT_MS)\nwhile no DispatchCommand is ready
+
+@100
+Fire is TIMED_WAITING
+Scheduler is DISPATCHING
+D1 is EN_ROUTE
+
+Scheduler@100 <-> @200 : assignMission() queues DispatchCommand\nand calls notifyAll()
+D1@100 <-> @300 : injected fault delay = 4.0 simulated sec\nscaled to 200 ms real
+
+@200
+Scheduler is WAITING_FOR_DRONE
+
+@300
+Scheduler is WAITING_FOR_DRONE
+D1 is RESETTING
+
+D1@300 <-> @600 : timedStateWait(waitMs)\nsoft reset = 6.0 simulated sec\nscaled to 300 ms real
+Scheduler@300 <-> @600 : soft fault received;\nmission stays active,\nno requeue
+
+@600
+Scheduler is WAITING_FOR_DRONE
+D1 is EN_ROUTE
+
+@700
+Scheduler is WAITING_FOR_DRONE
+D1 is DROPPING_AGENT
+
+@800
+Fire is RUNNING
+Scheduler is IDLE
+D1 is IDLE
+
+Fire@800 <-> @1400 : Scenario 2\nNozzle Jammed
+Scheduler@800 <-> @900 : putRequest(req) calls notifyAll()\nand wakes Scheduler.run() from wait(200)
+
+@900
+Fire is TIMED_WAITING
+Scheduler is DISPATCHING
+D1 is EN_ROUTE
+
+Scheduler@900 <-> @1000 : assignMission() queues DispatchCommand\nand calls notifyAll()
+D1@900 <-> @1200 : injected hard fault delay = 6.0 simulated sec\nscaled to 300 ms real
+
+@1000
+Scheduler is WAITING_FOR_DRONE
+D1 is DROPPING_AGENT
+
+@1200
+Scheduler is DISPATCHING
+D1 is OFFLINE
+
+Scheduler@1200 <-> @1300 : handleHardFault(...)\nmissionQueue.addFirst(mission)\nnotifyAll() after requeue / next dispatch
+D1@1200 <-> @1400 : hard fault latched;\nDrone_1 stays OFFLINE for this run
+
+@1300
+Scheduler is WAITING_FOR_DRONE
+D1 is OFFLINE
+
+@1500
+Fire is RUNNING
+Scheduler is IDLE
+D1 is IDLE
+
+Fire@1500 <-> @1900 : Scenario 3\nPacket Loss
+Scheduler@1500 <-> @1600 : putRequest(req) calls notifyAll()\nand wakes Scheduler.run() from wait(200)
+
+@1600
+Fire is TIMED_WAITING
+Scheduler is DISPATCHING
+D1 is EN_ROUTE
+
+Scheduler@1600 <-> @1700 : assignMission() queues DispatchCommand\nand calls notifyAll()
+D1@1600 <-> @1700 : injected packet-loss delay = 2.0 simulated sec\nscaled to 100 ms real
+
+@1700
+Scheduler is WAITING_FOR_DRONE
+D1 is EN_ROUTE
+
+D1@1700 <-> @1800 : timedStateWait(scaledMillisForSimulationSeconds(2.0))\nretry timeout = 100 ms real
+Scheduler@1700 <-> @1800 : first STATUS reports PACKET_LOSS;\nsecond STATUS is the retry;\nmission is not requeued
+
+@1800
+Scheduler is WAITING_FOR_DRONE
+D1 is EN_ROUTE
+
+@1900
+Fire is TIMED_WAITING
+Scheduler is WAITING_FOR_DRONE
+D1 is EN_ROUTE
+
+@enduml

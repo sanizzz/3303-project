@@ -1,7 +1,7 @@
 @startuml
 left to right direction
 skinparam classAttributeIconSize 0
-title Iteration 3 Design Overview
+title Iteration 4 Design Overview
 
 package "Application" {
   class Main {
@@ -18,6 +18,7 @@ package "Subsystems" {
     -inProgressByMissionId : Map<Integer, Mission>
     -activeMissionByDroneId : Map<Integer, Mission>
     -dispatchQueue : LinkedList<DispatchCommand>
+    -statusUpdateQueue : LinkedList<DroneStatusUpdate>
     -completionQueue : LinkedList<FireRequest>
     -droneStateById : Map<Integer, DroneState>
     -droneAgentById : Map<Integer, Double>
@@ -25,6 +26,9 @@ package "Subsystems" {
     -dronePosXById : Map<Integer, Double>
     -dronePosYById : Map<Integer, Double>
     -assignedCountByDroneId : Map<Integer, Integer>
+    -droneStatusSeenById : Map<Integer, Boolean>
+    -droneFaultById : Map<Integer, FaultType>
+    -droneFaultMessageById : Map<Integer, String>
     -configuredDroneCount : int
     +putRequest(req : FireRequest) : void
     +getDispatchCommandForDrone(droneId : int) : DispatchCommand
@@ -32,12 +36,20 @@ package "Subsystems" {
     +sendDroneStatusUpdate(update : DroneStatusUpdate) : void
     +getCompletion() : FireRequest
     +getActiveFires() : int
+    +getQueuedMissionCount() : int
+    +getInProgressMissionCount() : int
+    +getDroneFaultType(droneId : int) : FaultType
+    +getDroneFaultMessage(droneId : int) : String
     +setConfiguredDroneCount(count : int) : void
     +run() : void
+    -buildDispatchCommand(droneId : int, mission : Mission) : DispatchCommand
+    -handleHardFault(droneId : int, mission : Mission, update : DroneStatusUpdate) : void
+    -updateGui() : void
   }
 
   class "fire_incident_subsystem.FireIncidentSubsystem" as FireIncidentSubsystem {
     -scheduler : Scheduler
+    -gui : SimulationGUI
     -csvFile : String
     -timeScale : int
     -totalEventsSent : int
@@ -48,6 +60,8 @@ package "Subsystems" {
     +setCsvFile(filename : String) : void
     +setCsvPath(csvPath : String) : void
     +run() : void
+    -parseRequestRow(row : String[]) : FireRequest
+    -buildRequestPayload(req : FireRequest) : String
   }
 
   class "Drone_subsystem.DroneSubsystem" as DroneSubsystem {
@@ -62,12 +76,25 @@ package "Subsystems" {
     -zoneMap : Map<Integer, Zone>
     -drone : Drone
     -timeScale : int
+    -commandLock : Object
+    -stateWaitLock : Object
+    -commandQueue : LinkedList<DispatchCommand>
     -currentState : DroneState
     -activeMission : Mission
     -remainingDropSeconds : double
+    -activeFaultType : FaultType
+    -faultDeadlineMs : long
+    -faultTriggered : boolean
+    -resetCompleteAtMs : long
     +submitCommand(command : DispatchCommand) : void
     +getCurrentState() : DroneState
     +run() : void
+    -armFaultWindow(command : DispatchCommand) : void
+    -advanceResetRecovery() : void
+    -triggerStuckMidFlightFault() : void
+    -triggerNozzleJammedFault() : void
+    -injectPacketLossAndRetry(state : DroneState, missionId : int, message : String) : void
+    -timedStateWait(waitMs : long) : void
   }
 }
 
@@ -77,6 +104,9 @@ package "Domain" {
     -zoneId : int
     -type : EventType
     -severity : Severity
+    -injectedFaultType : FaultType
+    -faultTriggerSeconds : int
+    -faultPending : boolean
     -requiredFoam : double
     -isResolved : boolean
     -inProgress : boolean
@@ -84,6 +114,10 @@ package "Domain" {
     +getTime() : LocalTime
     +getType() : EventType
     +getSeverity() : Severity
+    +getInjectedFaultType() : FaultType
+    +getFaultTriggerSeconds() : int
+    +consumePendingFault() : FaultType
+    +hasPendingFault() : boolean
     +getRequiredFoam() : double
     +updateRequiredFoam(amount : double) : void
     +setResolved(resolved : boolean) : void
@@ -116,6 +150,15 @@ package "Types" {
     EN_ROUTE
     DROPPING_AGENT
     RETURNING
+    RESETTING
+    OFFLINE
+  }
+
+  enum FaultType {
+    NONE
+    STUCK_MID_FLIGHT
+    NOZZLE_JAMMED
+    PACKET_LOSS
   }
 
   enum SchedulerState {
@@ -155,11 +198,16 @@ package "Types" {
     -targetDroneId : Integer
     -mission : Mission
     -returnToBase : boolean
+    -faultType : FaultType
+    -faultTriggerSeconds : int
     +dispatch(targetDroneId : Integer, mission : Mission) : DispatchCommand
+    +dispatch(targetDroneId : Integer, mission : Mission,\nfaultType : FaultType, faultTriggerSeconds : int) : DispatchCommand
     +returnToBase(targetDroneId : Integer) : DispatchCommand
     +getTargetDroneId() : Integer
     +getMission() : Mission
     +isReturnToBase() : boolean
+    +getFaultType() : FaultType
+    +getFaultTriggerSeconds() : int
   }
 
   class DroneStatusUpdate {
@@ -171,7 +219,14 @@ package "Types" {
     -positionX : double
     -positionY : double
     -message : String
+    -faultType : FaultType
     +hasPosition() : boolean
+    +getFaultType() : FaultType
+    +hasFault() : boolean
+  }
+
+  class LogUtil {
+    +{static} stamp(message : String) : String
   }
 
   class UdpUtil {
@@ -210,6 +265,10 @@ package "GUI" {
     +setDroneState(state : String) : void
     +setActiveFires(count : int) : void
     +log(message : String) : void
+    +setConfiguredDroneCount(count : int) : void
+    +updateDroneStatus(droneId : int, state : String, faultType : FaultType, note : String) : void
+    -ensureDroneLabel(droneId : int) : JLabel
+    -applyDroneLabelColors(label : JLabel, state : String, faultType : FaultType) : void
   }
 }
 
@@ -224,15 +283,18 @@ Scheduler --> DispatchCommand
 DispatchCommand --> Mission
 Mission --> FireRequest
 Scheduler --> DroneStatusUpdate
+Scheduler ..> FaultType
 DroneSubsystem --> Scheduler : getDispatchCommandForDrone/sendDroneStatusUpdate
 DroneSubsystem --> DroneExecutionEngine
 DroneExecutionEngine --> DispatchCommand
 DroneExecutionEngine --> DroneStatusUpdate
 DroneExecutionEngine --> Drone
 DroneExecutionEngine --> Zone
+DroneExecutionEngine ..> FaultType
 Scheduler --> Zone
 Scheduler --> SimulationGUI
 FireIncidentSubsystem --> UdpUtil
+FireIncidentSubsystem ..> FaultType
 SchedulerMain --> Scheduler
 SchedulerMain --> UdpUtil
 SchedulerMain --> DispatchCommand : forwards UDP commands
@@ -245,10 +307,20 @@ FireIncidentSubsystemMain --> FireIncidentSubsystem
 SchedulerMain ..> UdpConfig
 DroneSubsystemMain ..> UdpConfig
 FireIncidentSubsystemMain ..> UdpConfig
+FireRequest ..> FaultType
+DispatchCommand ..> FaultType
+DroneStatusUpdate ..> FaultType
+SimulationGUI ..> FaultType
 
 note bottom of SchedulerMain
   UDP-only cross-subsystem communication is handled by the launcher threads:
   REQ from Fire, STATUS from Drones, CMD to Drones, and COMP back to Fire.
+end note
+
+note bottom of DroneExecutionEngine
+  In this project, the drone fault logic is inside DroneExecutionEngine.
+  The fault starts in FireRequest, gets copied into DispatchCommand,
+  and is handled by the drone thread during the mission.
 end note
 
 @enduml

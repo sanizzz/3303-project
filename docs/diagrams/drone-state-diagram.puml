@@ -1,28 +1,50 @@
 @startuml
-title Drone Execution State Machine (Iteration 3)
+title Drone State Machine (Iteration 4)
 
 state IDLE
 state EN_ROUTE
 state DROPPING_AGENT
 state RETURNING
+state RESETTING
+state OFFLINE
 
-IDLE : do / wait for DispatchCommand from scheduler
-EN_ROUTE : entry / set active mission and target zone
-EN_ROUTE : do / move toward zone and send periodic STATUS updates
-DROPPING_AGENT : do / discharge agent and update required foam
-RETURNING : do / travel to base and send periodic STATUS updates
+IDLE : do / wait for the next DispatchCommand
+EN_ROUTE : entry / start the mission, set the target zone,\nand copy any fault info for this trip
+EN_ROUTE : do / fly toward the zone, send status updates,\nand check if a fault should happen yet
+DROPPING_AGENT : do / drop the agent, update remaining foam,\nand check for the hard fault
+RETURNING : do / fly back to base and send status updates
+RESETTING : do / use wait(timeout) for the short reset,\nthen continue the same mission
+OFFLINE : do / stay down and ignore any new mission commands
 
 [*] --> IDLE
 
 IDLE --> EN_ROUTE : DISPATCH
 EN_ROUTE --> EN_ROUTE : REROUTE_DISPATCH /\nreplace mission and destination
+EN_ROUTE --> EN_ROUTE : PACKET_LOSS_TIMEOUT /\nretry the status message after timedStateWait(timeout)
+EN_ROUTE --> RESETTING : STUCK_MID_FLIGHT /\ntriggerStuckMidFlightFault()
+RESETTING --> EN_ROUTE : RESET_COMPLETE /\nsend a new status update and keep going
 EN_ROUTE --> DROPPING_AGENT : ARRIVED
 
+DROPPING_AGENT --> OFFLINE : NOZZLE_JAMMED /\ntriggerNozzleJammedFault()
 DROPPING_AGENT --> RETURNING : TANK_EMPTY and fire_not_out
 RETURNING --> IDLE : AT_BASE_REFILLED /\nrefill and decide next action
 
 DROPPING_AGENT --> IDLE : MISSION_COMPLETE
 IDLE --> RETURNING : RETURN_TO_BASE_CMD
 IDLE --> EN_ROUTE : RESUME_MISSION
+OFFLINE --> [*] : SIMULATION_END
+
+note right of RESETTING
+  The drone thread uses
+  DroneExecutionEngine.waitForNextSimulationStep()
+  and timedStateWait(waitMs),
+  which calls stateWaitLock.wait(timeout).
+end note
+
+note right of OFFLINE
+  The scheduler gets an OFFLINE update
+  and puts the mission back in the queue
+  using handleHardFault(...).
+end note
 
 @enduml

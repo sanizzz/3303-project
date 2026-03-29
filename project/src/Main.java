@@ -4,6 +4,7 @@ import Drone_subsystem.Zone;
 import Scheduler.Scheduler;
 import fire_incident_subsystem.FireIncidentSubsystem;
 import gui.SimulationGUI;
+import types.LogUtil;
 
 import javax.swing.SwingUtilities;
 import java.io.File;
@@ -14,7 +15,7 @@ public class Main {
     public static final int TIME_SCALE = 20;
 
     public static void main(String[] args) {
-        System.out.println("[System] DEMO MODE ENABLED: Speed x" + TIME_SCALE);
+        System.out.println(LogUtil.stamp("[System] DEMO MODE ENABLED: Speed x" + TIME_SCALE));
 
         String zoneCsvPath = resolveExistingPath(
                 "project/sampleData/sample_zone_file.csv",
@@ -60,6 +61,7 @@ public class Main {
             gui.log("[Main] Config -> Drones=" + drones + ", Capacity=" + capacity + "L");
 
             scheduler.setConfiguredDroneCount(drones);
+            gui.setConfiguredDroneCount(drones);
             Drone.configure(capacity, Drone.getSpeed(), Drone.getFullBattery(), Drone.getTotalExtinguishingTime());
 
             Thread schedulerThread = new Thread(scheduler, "scheduler-thread");

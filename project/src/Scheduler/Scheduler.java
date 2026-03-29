@@ -7,6 +7,8 @@ import gui.SimulationGUI;
 import types.DispatchCommand;
 import types.DroneState;
 import types.DroneStatusUpdate;
+import types.FaultType;
+import types.LogUtil;
 import types.Mission;
 import types.MissionStatus;
 import types.SchedulerState;
@@ -19,8 +21,8 @@ import java.util.LinkedList;
 import java.util.Map;
 
 /**
- * Scheduler state machine for Iteration 3.
- * Supports multiple drones, workload-aware dispatching, rerouting, and UDP launcher mode.
+ * This is the main scheduler for Iteration 4.
+ * It receives fire requests, sends missions to drones, and handles faults.
  */
 public class Scheduler implements Runnable {
 
@@ -45,6 +47,8 @@ public class Scheduler implements Runnable {
     private final Map<Integer, Double> dronePosYById = new HashMap<>();
     private final Map<Integer, Integer> assignedCountByDroneId = new HashMap<>();
     private final Map<Integer, Boolean> droneStatusSeenById = new HashMap<>();
+    private final Map<Integer, FaultType> droneFaultById = new HashMap<>();
+    private final Map<Integer, String> droneFaultMessageById = new HashMap<>();
     private int configuredDroneCount = 1;
 
     private SimulationGUI gui;
@@ -76,6 +80,9 @@ public class Scheduler implements Runnable {
         initDroneTracking(count);
     }
 
+    /**
+     * This sets up the maps that store the current information for each drone.
+     */
     private void initDroneTracking(int count) {
         int safeCount = Math.max(1, count);
         configuredDroneCount = safeCount;
@@ -87,9 +94,15 @@ public class Scheduler implements Runnable {
             dronePosYById.putIfAbsent(i, 0.0);
             assignedCountByDroneId.putIfAbsent(i, 0);
             droneStatusSeenById.putIfAbsent(i, false);
+            droneFaultById.putIfAbsent(i, FaultType.NONE);
+            droneFaultMessageById.putIfAbsent(i, "Ready");
         }
     }
 
+    /**
+     * This is the main scheduler loop.
+     * It keeps checking for new fire requests, drone updates, and dispatch decisions.
+     */
     @Override
     public void run() {
         log("[Scheduler] State machine started. State: " + state);
@@ -119,6 +132,9 @@ public class Scheduler implements Runnable {
         log("[Scheduler] Shutting down.");
     }
 
+    /**
+     * This takes a fire request and turns it into a mission unless that zone is already active.
+     */
     private void enqueueMission(FireRequest req) {
         if (isZoneAlreadyActive(req.getZoneId())) {
             req.setResolved(false);
@@ -139,12 +155,20 @@ public class Scheduler implements Runnable {
             logTransition(old, state, "NEW_FIRE");
         }
 
-        log(String.format("[Scheduler] Enqueued %s | Queue size: %d", mission, missionQueue.size()));
+        log(String.format("[Scheduler] Enqueued %s | Queue size: %d | Fault=%s @ %ds | Pending=%s",
+                mission,
+                missionQueue.size(),
+                req.getInjectedFaultType(),
+                req.getFaultTriggerSeconds(),
+                req.hasPendingFault()));
 
         attemptRerouteForNewMission(mission);
         updateGui();
     }
 
+    /**
+     * This handles rerouting when a better mission appears while a drone is already flying.
+     */
     private boolean attemptRerouteForNewMission(Mission newMission) {
         RerouteCandidate reroute = findBestRerouteCandidate(newMission);
         if (reroute == null) {
@@ -164,7 +188,7 @@ public class Scheduler implements Runnable {
         newMission.setStatus(MissionStatus.IN_PROGRESS);
         inProgressByMissionId.put(newMission.getMissionId(), newMission);
         activeMissionByDroneId.put(reroute.droneId, newMission);
-        dispatchQueue.add(DispatchCommand.dispatch(reroute.droneId, newMission));
+        dispatchQueue.add(buildDispatchCommand(reroute.droneId, newMission));
         notifyAll();
 
         log(buildRerouteMessage(reroute.droneId, previousMission, newMission));
@@ -279,6 +303,9 @@ public class Scheduler implements Runnable {
         return best;
     }
 
+    /**
+     * This sends a mission to a drone and marks it as in progress.
+     */
     private void assignMission(DispatchCandidate candidate) {
         missionQueue.remove(candidate.mission);
         candidate.mission.setStatus(MissionStatus.IN_PROGRESS);
@@ -304,7 +331,7 @@ public class Scheduler implements Runnable {
                     candidate.droneId));
         }
 
-        dispatchQueue.add(DispatchCommand.dispatch(candidate.droneId, candidate.mission));
+        dispatchQueue.add(buildDispatchCommand(candidate.droneId, candidate.mission));
         droneStateById.put(candidate.droneId, DroneState.EN_ROUTE);
         notifyAll();
 
@@ -314,6 +341,26 @@ public class Scheduler implements Runnable {
         updateGui();
     }
 
+    /**
+     * This builds the dispatch command and attaches the fault if the request still has one.
+     */
+    private DispatchCommand buildDispatchCommand(int droneId, Mission mission) {
+        FireRequest request = mission.getFireRequest();
+        FaultType faultType = request.consumePendingFault();
+        int faultTriggerSeconds = faultType == FaultType.NONE ? 0 : request.getFaultTriggerSeconds();
+
+        if (faultType != FaultType.NONE) {
+            log(String.format("[Scheduler] Dispatching Drone %d with injected fault %s at +%ds simulated.",
+                    droneId, faultType, faultTriggerSeconds));
+        }
+
+        return DispatchCommand.dispatch(droneId, mission, faultType, faultTriggerSeconds);
+    }
+
+    /**
+     * This handles one status update sent by a drone.
+     * It is where the scheduler notices mission progress and fault events.
+     */
     private void handleDroneStatusUpdate(DroneStatusUpdate update) {
         int droneId = update.getDroneId();
         initDroneTracking(Math.max(configuredDroneCount, droneId));
@@ -327,11 +374,30 @@ public class Scheduler implements Runnable {
             dronePosYById.put(droneId, update.getPositionY());
         }
 
+        if (update.hasFault()) {
+            droneFaultById.put(droneId, update.getFaultType());
+            droneFaultMessageById.put(droneId, update.getMessage());
+        } else if (update.getDroneState() != DroneState.OFFLINE) {
+            clearDroneFault(droneId, update.getMessage());
+        }
+
         if (shouldLogStatusUpdate(update)) {
             log("[Scheduler] Received DroneStatusUpdate: " + update);
         }
 
         Mission mission = inProgressByMissionId.get(update.getMissionId());
+        if (update.getFaultType() == FaultType.NOZZLE_JAMMED && update.getDroneState() == DroneState.OFFLINE) {
+            handleHardFault(droneId, mission, update);
+            updateGui();
+            return;
+        }
+
+        if (update.getFaultType() == FaultType.STUCK_MID_FLIGHT) {
+            log(String.format("[Scheduler] Drone %d reported soft fault: %s", droneId, update.getMessage()));
+        } else if (update.getFaultType() == FaultType.PACKET_LOSS) {
+            log(String.format("[Scheduler] Drone %d reported packet loss. Waiting for retry.", droneId));
+        }
+
         if (update.getDroneState() == DroneState.DROPPING_AGENT && mission != null && isArrivalUpdate(update)) {
             Zone zone = zoneMap != null ? zoneMap.get(mission.getZoneId()) : null;
             if (zone != null) {
@@ -340,6 +406,9 @@ public class Scheduler implements Runnable {
                 zone.setZoneState(Zone.ZoneState.ON_FIRE);
             }
             log("[Scheduler] Drone " + droneId + " arrived at Zone " + mission.getZoneId() + ".");
+        } else if (update.getDroneState() == DroneState.RESETTING) {
+            log(String.format("[Scheduler] Drone %d temporarily unavailable while resetting for Mission %d.",
+                    droneId, update.getMissionId()));
         } else if (update.getDroneState() == DroneState.IDLE) {
             if (mission != null) {
                 if (isMissionCompletionUpdate(update)) {
@@ -358,6 +427,58 @@ public class Scheduler implements Runnable {
         }
 
         updateGui();
+    }
+
+    /**
+     * This clears the fault shown for a drone after it has recovered.
+     */
+    private void clearDroneFault(int droneId, String latestMessage) {
+        droneFaultById.put(droneId, FaultType.NONE);
+        if (latestMessage == null || latestMessage.isBlank()) {
+            droneFaultMessageById.put(droneId, "Ready");
+        } else {
+            droneFaultMessageById.put(droneId, latestMessage);
+        }
+    }
+
+    /**
+     * This handles a hard fault.
+     * The drone is marked offline and the mission is put back in the queue.
+     */
+    private void handleHardFault(int droneId, Mission mission, DroneStatusUpdate update) {
+        droneStateById.put(droneId, DroneState.OFFLINE);
+        droneFaultById.put(droneId, FaultType.NOZZLE_JAMMED);
+        droneFaultMessageById.put(droneId, update.getMessage());
+
+        if (mission == null) {
+            activeMissionByDroneId.remove(droneId);
+            log(String.format("[Scheduler] Drone %d marked offline, but no active mission was mapped.", droneId));
+            return;
+        }
+
+        inProgressByMissionId.remove(mission.getMissionId());
+        activeMissionByDroneId.remove(droneId);
+        mission.setStatus(MissionStatus.QUEUED);
+        mission.getFireRequest().setResolved(false);
+        mission.getFireRequest().setInProgress(false);
+        missionQueue.addFirst(mission);
+
+        if (zoneMap != null) {
+            Zone zone = zoneMap.get(mission.getZoneId());
+            if (zone != null) {
+                zone.setZoneState(Zone.ZoneState.ON_FIRE);
+            }
+        }
+
+        SchedulerState old = state;
+        state = SchedulerState.DISPATCHING;
+        if (old != state) {
+            logTransition(old, state, "HARD_FAULT_REQUEUE");
+        }
+        log(String.format(
+                "[Scheduler] Hard fault on Drone %d. Mission %d for Zone %d re-queued and drone marked OFFLINE.",
+                droneId, mission.getMissionId(), mission.getZoneId()));
+        dispatchNextIfPossible();
     }
 
     private boolean isMissionCompletionUpdate(DroneStatusUpdate update) {
@@ -379,8 +500,15 @@ public class Scheduler implements Runnable {
         return msg.trim().toLowerCase().startsWith("arrived");
     }
 
+    /**
+     * This decides which drone updates are important enough to print in the log.
+     */
     private boolean shouldLogStatusUpdate(DroneStatusUpdate update) {
         if (UdpConfig.LOG_EVERY_STATUS_UPDATE) {
+            return true;
+        }
+
+        if (update.hasFault()) {
             return true;
         }
 
@@ -399,12 +527,16 @@ public class Scheduler implements Runnable {
                 && !normalized.equals("returning to base");
     }
 
+    /**
+     * This finishes a mission after the scheduler gets the completion update from the drone.
+     */
     private void completeMission(int droneId, Mission mission) {
         mission.setStatus(MissionStatus.COMPLETED);
         mission.getFireRequest().setResolved(true);
         mission.getFireRequest().setInProgress(false);
         inProgressByMissionId.remove(mission.getMissionId());
         activeMissionByDroneId.remove(droneId);
+        clearDroneFault(droneId, "Mission complete");
 
         if (zoneMap != null) {
             Zone zone = zoneMap.get(mission.getZoneId());
@@ -426,7 +558,14 @@ public class Scheduler implements Runnable {
                 droneBatteryById.getOrDefault(droneId, Drone.getFullBattery())));
     }
 
+    /**
+     * This decides what an available drone should do next.
+     */
     private void handleDroneAvailability(int droneId) {
+        if (droneStateById.getOrDefault(droneId, DroneState.IDLE) == DroneState.OFFLINE) {
+            return;
+        }
+
         if (missionQueue.isEmpty()) {
             if (!isDroneAtBase(droneId)) {
                 SchedulerState old = state;
@@ -454,12 +593,16 @@ public class Scheduler implements Runnable {
         dispatchNextIfPossible();
     }
 
+    /**
+     * This resets the drone values when it gets back to base.
+     */
     private void resetDroneAtBase(int droneId) {
         droneAgentById.put(droneId, Drone.getLoadCapacity());
         droneBatteryById.put(droneId, Drone.getFullBattery());
         dronePosXById.put(droneId, 0.0);
         dronePosYById.put(droneId, 0.0);
         droneStateById.put(droneId, DroneState.IDLE);
+        clearDroneFault(droneId, "At base and ready");
         log("[Scheduler] Drone " + droneId + " at base. Instant refill/recharge complete.");
     }
 
@@ -505,10 +648,13 @@ public class Scheduler implements Runnable {
                 && Math.abs(dronePosYById.getOrDefault(droneId, 0.0)) < 0.0001;
     }
 
+    /**
+     * This sends a return-to-base command if the drone is allowed to go back.
+     */
     private void sendReturnToBase(Integer targetDroneId) {
         if (targetDroneId != null) {
             DroneState current = droneStateById.getOrDefault(targetDroneId, DroneState.IDLE);
-            if (current == DroneState.RETURNING) {
+            if (current == DroneState.RETURNING || current == DroneState.OFFLINE) {
                 return;
             }
         }
@@ -625,12 +771,19 @@ public class Scheduler implements Runnable {
                 reason);
     }
 
+    /**
+     * This adds a new fire request into the scheduler input queue.
+     */
     public synchronized void putRequest(FireRequest req) {
         incomingFireRequests.add(req);
-        log("[Scheduler] Received fire request for Zone " + req.getZoneId());
+        log(String.format("[Scheduler] Received fire request for Zone %d with fault=%s @ %ds",
+                req.getZoneId(), req.getInjectedFaultType(), req.getFaultTriggerSeconds()));
         notifyAll();
     }
 
+    /**
+     * This waits until there is a command ready for a specific drone.
+     */
     public synchronized DispatchCommand getDispatchCommandForDrone(int droneId) {
         while (true) {
             for (int i = 0; i < dispatchQueue.size(); i++) {
@@ -651,6 +804,9 @@ public class Scheduler implements Runnable {
         }
     }
 
+    /**
+     * This returns the next dispatch command for the UDP version of the system.
+     */
     public synchronized DispatchCommand getNextDispatchCommand() {
         while (dispatchQueue.isEmpty()) {
             try {
@@ -663,6 +819,9 @@ public class Scheduler implements Runnable {
         return dispatchQueue.removeFirst();
     }
 
+    /**
+     * This is a helper used by some older tests.
+     */
     public synchronized Mission getDispatchedMission() {
         DispatchCommand cmd = getDispatchCommandForDrone(1);
         if (cmd == null || cmd.isReturnToBase()) {
@@ -671,11 +830,17 @@ public class Scheduler implements Runnable {
         return cmd.getMission();
     }
 
+    /**
+     * This adds a new drone status update into the scheduler queue.
+     */
     public synchronized void sendDroneStatusUpdate(DroneStatusUpdate update) {
         statusUpdateQueue.add(update);
         notifyAll();
     }
 
+    /**
+     * This waits until a completion is ready to be sent back to the fire subsystem.
+     */
     public synchronized FireRequest getCompletion() {
         while (completionQueue.isEmpty()) {
             try {
@@ -699,12 +864,40 @@ public class Scheduler implements Runnable {
         return missionQueue.size() + inProgressByMissionId.size();
     }
 
+    /**
+     * This returns how many missions are currently waiting in the ready queue.
+     */
+    public synchronized int getQueuedMissionCount() {
+        return missionQueue.size();
+    }
+
+    /**
+     * This returns how many missions are currently being worked on.
+     */
+    public synchronized int getInProgressMissionCount() {
+        return inProgressByMissionId.size();
+    }
+
     public synchronized DroneState getDroneState() {
         return getDroneState(1);
     }
 
     public synchronized DroneState getDroneState(int droneId) {
         return droneStateById.getOrDefault(droneId, DroneState.IDLE);
+    }
+
+    /**
+     * Returns the current fault type for a drone.
+     */
+    public synchronized FaultType getDroneFaultType(int droneId) {
+        return droneFaultById.getOrDefault(droneId, FaultType.NONE);
+    }
+
+    /**
+     * Returns the current status message for a drone.
+     */
+    public synchronized String getDroneFaultMessage(int droneId) {
+        return droneFaultMessageById.getOrDefault(droneId, "Ready");
     }
 
     public synchronized SchedulerState getSchedulerState() {
@@ -723,21 +916,39 @@ public class Scheduler implements Runnable {
         return assignedCountByDroneId.getOrDefault(droneId, 0);
     }
 
+    /**
+     * This updates the GUI with the latest scheduler and drone information.
+     */
     private void updateGui() {
         if (gui != null) {
+            gui.setConfiguredDroneCount(configuredDroneCount);
             gui.setDroneState(getDroneState().toString());
             gui.setActiveFires(getActiveFires());
+            for (int droneId = 1; droneId <= configuredDroneCount; droneId++) {
+                gui.updateDroneStatus(
+                        droneId,
+                        droneStateById.getOrDefault(droneId, DroneState.IDLE).toString(),
+                        droneFaultById.getOrDefault(droneId, FaultType.NONE),
+                        droneFaultMessageById.getOrDefault(droneId, "Ready"));
+            }
         }
     }
 
+    /**
+     * This writes state changes in a simple scheduler log format.
+     */
     private void logTransition(SchedulerState from, SchedulerState to, String event) {
         log(String.format("[Scheduler] %s --(%s)--> %s", from, event, to));
     }
 
+    /**
+     * This adds a timestamp and prints the scheduler log message.
+     */
     private void log(String message) {
-        System.out.println(message);
+        String stamped = LogUtil.stamp(message);
+        System.out.println(stamped);
         if (gui != null) {
-            gui.log(message);
+            gui.log(stamped);
         }
     }
 
