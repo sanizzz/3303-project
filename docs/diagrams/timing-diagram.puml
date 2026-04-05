@@ -1,11 +1,15 @@
 @startuml
 title Iteration 4 Timing Diagram
+scale 100 as 150 pixels
+skinparam ParticipantPadding 30
+skinparam ArrowFontSize 11
 
 ' Main.TIME_SCALE = 20
 ' Scheduler wait = 200 ms
 ' Drone tick = 100 ms
 ' Soft reset = 6.0 simulated sec = 300 ms real
 ' Packet retry = 2.0 simulated sec = 100 ms real
+' Visual gaps between scenario blocks are for readability only.
 
 robust "Fire_Subsystem" as Fire
 robust "Scheduler" as Scheduler
@@ -16,20 +20,20 @@ Fire is RUNNING
 Scheduler is IDLE
 D1 is IDLE
 
-@0 <-> @700 : Scenario 1 - Stuck Mid-Flight
-@0 <-> @100 : putRequest(req) notifyAll()
+@0 <-> @700 : Scenario 1\nStuck Mid-Flight
+@25 <-> @100 : \n\nputRequest(req)\nnotifyAll()
 @100
 Fire is TIMED_WAITING
 Scheduler is DISPATCHING
 D1 is EN_ROUTE
 
-@100 <-> @300 : faultTriggerSeconds expires
+@125 <-> @300 : \n\nfaultTriggerSeconds\nexpires
 @200
 Scheduler is WAITING_FOR_DRONE
 
 @300
 D1 is RESETTING
-@300 <-> @600 : wait(timeout) soft reset window
+@325 <-> @600 : \n\nwait(timeout)\nsoft reset window
 
 @600
 Scheduler is WAITING_FOR_DRONE
@@ -40,51 +44,51 @@ Fire is RUNNING
 Scheduler is IDLE
 D1 is IDLE
 
-@700 <-> @1300 : Scenario 2 - Nozzle Jammed
-@700 <-> @800 : putRequest(req) notifyAll()
-@800
+@800 <-> @1400 : Scenario 2\nNozzle Jammed
+@825 <-> @900 : \n\nputRequest(req)\nnotifyAll()
+@900
 Fire is TIMED_WAITING
 Scheduler is DISPATCHING
 D1 is EN_ROUTE
 
-@900
+@1000
 Scheduler is WAITING_FOR_DRONE
 D1 is DROPPING_AGENT
 
-@900 <-> @1100 : hard fault timer reaches deadline
-@1100
+@1025 <-> @1200 : \n\nhard fault timer\nreaches deadline
+@1200
 Scheduler is DISPATCHING
 D1 is OFFLINE
 
-@1100 <-> @1200 : handleHardFault(...)\nmission requeued and notifyAll()
-@1200
+@1225 <-> @1300 : \n\nhandleHardFault(...)\nmission requeued\nnotifyAll()
+@1300
 Scheduler is WAITING_FOR_DRONE
 D1 is OFFLINE
 
-@1300
+@1400
 Fire is RUNNING
 Scheduler is IDLE
 D1 is IDLE
 
-@1300 <-> @1800 : Scenario 3 - Packet Loss
-@1300 <-> @1400 : putRequest(req) notifyAll()
-@1400
+@1500 <-> @2000 : Scenario 3\nPacket Loss
+@1525 <-> @1600 : \n\nputRequest(req)\nnotifyAll()
+@1600
 Fire is TIMED_WAITING
 Scheduler is DISPATCHING
 D1 is EN_ROUTE
-
-@1500
-Scheduler is WAITING_FOR_DRONE
-D1 is EN_ROUTE
-
-@1500 <-> @1600 : first STATUS lost / corrupted
-@1600 <-> @1700 : wait(timeout) retry delay
 
 @1700
 Scheduler is WAITING_FOR_DRONE
 D1 is EN_ROUTE
 
-@1800
+@1725 <-> @1800 : \n\nfirst STATUS\nlost / corrupted
+@1825 <-> @1900 : \n\nwait(timeout)\nretry delay
+
+@1900
+Scheduler is WAITING_FOR_DRONE
+D1 is EN_ROUTE
+
+@2000
 Fire is TIMED_WAITING
 Scheduler is WAITING_FOR_DRONE
 D1 is EN_ROUTE
