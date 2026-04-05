@@ -1,27 +1,40 @@
 @startuml
-title Scheduler State Machine (Iteration 4)
+title Scheduler State Machine (Iteration 5)
 
 state IDLE
 state DISPATCHING
 state WAITING_FOR_DRONE
 
 IDLE : do / wait for new fire requests
-DISPATCHING : entry / move new requests into missionQueue
-DISPATCHING : do / choose the best drone based on severity,\nETA, battery, load balance, reroutes, and hard faults
+DISPATCHING : entry / move new requests into missionQueue\nand split one fire into capacity-sized mission segments
+DISPATCHING : do / choose the best drone based on severity,\nETA, battery, remaining agent, load balance,\nreroutes, staggered support launches, and hard faults
 DISPATCHING : exit / queue the DispatchCommand\nand wake up the waiting dispatcher thread
 WAITING_FOR_DRONE : do / watch drone status updates,\nmission completion, refills, soft faults, and queue changes
 
 [*] --> IDLE
 
-IDLE --> DISPATCHING : NEW_FIRE / add mission to the queue
+IDLE --> DISPATCHING : NEW_FIRE /\nenqueueMissionSegments(req, incidentId)
 DISPATCHING --> WAITING_FOR_DRONE : DISPATCH_SENT
+DISPATCHING --> WAITING_FOR_DRONE : REROUTE_DISPATCH /\nattemptRerouteForNewMission(newMission)
+DISPATCHING --> DISPATCHING : SUPPORT_SEGMENT_DELAY_PENDING /\nwait until earliestDispatchTimeMs
 DISPATCHING --> DISPATCHING : no_feasible_idle_drone / leave mission in queue
 
 WAITING_FOR_DRONE --> DISPATCHING : queued_mission + feasible_idle_drone
+WAITING_FOR_DRONE --> DISPATCHING : MISSION_COMPLETE + enough_agent_and_battery /\nhandleDroneAvailability(droneId)\nand dispatch from current position
 WAITING_FOR_DRONE --> DISPATCHING : HARD_FAULT_OFFLINE /\nhandleHardFault(...), put mission back in queue,\nmark drone OFFLINE, then try dispatch again
 WAITING_FOR_DRONE --> WAITING_FOR_DRONE : SOFT_FAULT_STATUS_UPDATE /\nkeep the same mission active while the drone resets or retries
+WAITING_FOR_DRONE --> WAITING_FOR_DRONE : NEW_FIRE + en_route_reroute_candidate /\nattemptRerouteForNewMission(newMission)
 WAITING_FOR_DRONE --> WAITING_FOR_DRONE : NEW_FIRE or STATUS_UPDATE /\nupdate queue, position, mission tracking,\nand fault info for the GUI
 WAITING_FOR_DRONE --> IDLE : no queued or active missions /\nif a drone is away from base, queue RETURN command
+
+note right of DISPATCHING
+  Multi-Drone Dispatch is implemented by
+  enqueueMissionSegments(...).
+  Each support mission segment gets an
+  earliestDispatchTimeMs value spaced by
+  SAME_ZONE_DISPATCH_DELAY_MS so
+  same-zone launches are staggered.
+end note
 
 note right of WAITING_FOR_DRONE
   RETURN_TO_BASE is shown as an action the scheduler sends
@@ -33,8 +46,14 @@ note bottom of WAITING_FOR_DRONE
   RESETTING and OFFLINE belong to the drone,
   not the scheduler.
   Soft faults stay in WAITING_FOR_DRONE.
-  Hard faults send the scheduler back to DISPATCHING
-  because the failed mission is added back to missionQueue.
+  Immediate redispatch only happens if
+  canDroneServeAnyPendingMission(droneId)
+  and canDroneTakeMissionNow(...)
+  say the drone still has enough agent
+  and battery for another mission.
+  Hard faults send the scheduler back to
+  DISPATCHING because the failed mission
+  is added back to missionQueue.
 end note
 
 @enduml

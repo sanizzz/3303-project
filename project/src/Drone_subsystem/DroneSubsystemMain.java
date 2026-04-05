@@ -30,7 +30,7 @@ public class DroneSubsystemMain {
         double capacity = parseDoubleArg(args, "--capacity", Drone.getLoadCapacity());
         int speed = parseIntArg(args, "--speed", Drone.getSpeed());
         double battery = parseDoubleArg(args, "--battery", Drone.getFullBattery());
-        double dropTime = parseDoubleArg(args, "--dropTime", Drone.getTotalExtinguishingTime());
+        double dropTime = parseDoubleArg(args, "--dropTime", Drone.estimateDropTimeSeconds(capacity));
         Drone.configure(capacity, speed, battery, dropTime);
 
         Map<Integer, Zone> zoneMap = Zone.loadZones(zoneCsv);
@@ -93,16 +93,40 @@ public class DroneSubsystemMain {
         }
 
         if ("DISPATCH".equals(cmdType) && p.length >= 8) {
-            int missionId = Integer.parseInt(p[3]);
-            int zoneId = Integer.parseInt(p[4]);
-            LocalTime time = LocalTime.parse(p[5]);
-            EventType type = EventType.valueOf(p[6]);
-            Severity severity = Severity.valueOf(p[7]);
-            FaultType faultType = p.length >= 9 ? FaultType.fromText(p[8]) : FaultType.NONE;
-            int faultTriggerSeconds = p.length >= 10 ? Integer.parseInt(p[9]) : 0;
+            int missionId;
+            int incidentId;
+            int zoneId;
+            LocalTime time;
+            EventType type;
+            Severity severity;
+            double assignedAgentLiters;
+            FaultType faultType;
+            int faultTriggerSeconds;
+
+            if (p.length >= 10 && p[6].contains(":")) {
+                missionId = Integer.parseInt(p[3]);
+                incidentId = Integer.parseInt(p[4]);
+                zoneId = Integer.parseInt(p[5]);
+                time = LocalTime.parse(p[6]);
+                type = EventType.valueOf(p[7]);
+                severity = Severity.valueOf(p[8]);
+                assignedAgentLiters = Double.parseDouble(p[9]);
+                faultType = p.length >= 11 ? FaultType.fromText(p[10]) : FaultType.NONE;
+                faultTriggerSeconds = p.length >= 12 ? Integer.parseInt(p[11]) : 0;
+            } else {
+                missionId = Integer.parseInt(p[3]);
+                incidentId = missionId;
+                zoneId = Integer.parseInt(p[4]);
+                time = LocalTime.parse(p[5]);
+                type = EventType.valueOf(p[6]);
+                severity = Severity.valueOf(p[7]);
+                assignedAgentLiters = severity.getLitersNeeded();
+                faultType = p.length >= 9 ? FaultType.fromText(p[8]) : FaultType.NONE;
+                faultTriggerSeconds = p.length >= 10 ? Integer.parseInt(p[9]) : 0;
+            }
 
             FireRequest req = new FireRequest(time, zoneId, type, severity, faultType, faultTriggerSeconds);
-            Mission mission = new Mission(missionId, req);
+            Mission mission = new Mission(missionId, incidentId, req, assignedAgentLiters, 0L);
             return DispatchCommand.dispatch(droneId, mission, faultType, faultTriggerSeconds);
         }
 

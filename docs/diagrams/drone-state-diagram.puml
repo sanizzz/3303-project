@@ -1,5 +1,5 @@
 @startuml
-title Drone State Machine (Iteration 4)
+title Drone State Machine (Iteration 5)
 
 state IDLE
 state EN_ROUTE
@@ -8,11 +8,11 @@ state RETURNING
 state RESETTING
 state OFFLINE
 
-IDLE : do / wait for the next DispatchCommand
+IDLE : do / wait for the next DispatchCommand\nor an immediate resume after refill
 EN_ROUTE : entry / start the mission, set the target zone,\nand copy any fault info for this trip
 EN_ROUTE : do / fly toward the zone, send status updates,\nand check if a fault should happen yet
 DROPPING_AGENT : do / drop the agent, update remaining foam,\nand check for the hard fault
-RETURNING : do / fly back to base and send status updates
+RETURNING : do / fly back to base, send status updates,\nrefill at home, and decide whether to resume
 RESETTING : do / use wait(timeout) for the short reset,\nthen continue the same mission
 OFFLINE : do / stay down and ignore any new mission commands
 
@@ -26,13 +26,24 @@ RESETTING --> EN_ROUTE : RESET_COMPLETE /\nsend a new status update and keep goi
 EN_ROUTE --> DROPPING_AGENT : ARRIVED
 
 DROPPING_AGENT --> OFFLINE : NOZZLE_JAMMED /\ntriggerNozzleJammedFault()
-DROPPING_AGENT --> RETURNING : TANK_EMPTY and fire_not_out
-RETURNING --> IDLE : AT_BASE_REFILLED /\nrefill and decide next action
+DROPPING_AGENT --> RETURNING : TANK_EMPTY and segment_not_complete /\nreturn to base for refill
+RETURNING --> IDLE : REFILLED_FOR_CONTINUATION /\nsend Refilled at base, ready for next trip...
+IDLE --> EN_ROUTE : RESUME_MISSION /\nsend Resuming trip to Zone ...
+RETURNING --> IDLE : AT_BASE_REFILLED /\nreturned to base, refilled and ready
 
 DROPPING_AGENT --> IDLE : MISSION_COMPLETE
 IDLE --> RETURNING : RETURN_TO_BASE_CMD
-IDLE --> EN_ROUTE : RESUME_MISSION
 OFFLINE --> [*] : SIMULATION_END
+
+note right of RETURNING
+  The continuation path is
+  RETURNING -> IDLE -> EN_ROUTE
+  because the code emits
+  REFILLED_FOR_CONTINUATION
+  and then RESUME_MISSION.
+  AT_BASE_REFILLED is the
+  ready-at-base path.
+end note
 
 note right of RESETTING
   The drone thread uses

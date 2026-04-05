@@ -2,10 +2,12 @@
 autonumber
 hide footbox
 
+participant "MetricsRunner\n(headless batch)" as MetricsRunner
 participant "Fire Incident\nSubsystem" as Fire
 participant "SchedulerMain\n(UDP adapter)" as SchedulerMain
 participant "Scheduler\n(core)" as Scheduler
 participant "Drone Subsystem\n(UDP listener + engine)" as Drone
+participant "Drone Subsystem\n(support drone)" as Drone2
 
 note right of Scheduler
   SchedulerMain waits inside getNextDispatchCommand()
@@ -16,13 +18,35 @@ note right of Scheduler
   a DispatchCommand or a completion.
 end note
 
+note over MetricsRunner,Scheduler
+  MetricsRunner runs the in-process grading pass:
+  it resets Drone/Mission ids, starts the scheduler,
+  fire subsystem, and drone threads, loops 30 times,
+  waits on waitUntilQuiescent(), then prints
+  computeSampleMean(), computeSampleStandardDeviation(),
+  and the 95% confidence interval.
+  The detailed flow below shows one representative run.
+end note
+
+== Metrics Harness ==
+loop runNumber = 1..30
+  MetricsRunner -> Scheduler : start metrics-scheduler-run thread
+  MetricsRunner -> Drone : start metrics-drone-run-1 thread
+  MetricsRunner -> Drone2 : start metrics-drone-run-2..N thread(s)
+  MetricsRunner -> Fire : start metrics-fire-run thread
+  Fire --> MetricsRunner : fire thread joined
+  MetricsRunner -> Scheduler : waitUntilQuiescent()
+  MetricsRunner -> Drone : getIdleSeconds() / getFlightSeconds()\nfor each DroneSubsystem
+end
+MetricsRunner -> MetricsRunner : printSummary()\ncomputeSampleMean()\ncomputeSampleStandardDeviation()\n95% confidence interval
+
 == Incident Input ==
 Fire -> SchedulerMain : UDP REQ|time|zone|type|severity|faultType|faultTriggerSeconds
 activate SchedulerMain
 SchedulerMain -> Scheduler : putRequest(FireRequest)
 activate Scheduler
-Scheduler -> Scheduler : enqueueMission()
-Scheduler -> Scheduler : check queued missions,\nseverity, ETA, battery, and reroute rules
+Scheduler -> Scheduler : enqueueMission(req)\nenqueueMissionSegments(req, incidentId)
+Scheduler -> Scheduler : check queued missions,\nseverity, ETA, battery,\nremaining agent, and reroute rules
 alt feasible dispatch exists
   Scheduler -> Scheduler : buildDispatchCommand(droneId, mission)\nconsumePendingFault() from FireRequest
   Scheduler -> Scheduler : queue DispatchCommand\nnotifyAll()
@@ -46,6 +70,15 @@ alt mission dispatch
   SchedulerMain -> Drone : UDP CMD|DISPATCH|droneId|mission|faultType|faultTriggerSeconds
 else queue drained and drone away from base
   SchedulerMain -> Drone : UDP CMD|RETURN|droneId
+end
+opt multi-drone dispatch for one high-severity incident
+  Scheduler -> Scheduler : keep support Mission queued until\nmission.getEarliestDispatchTimeMs()
+  Scheduler -> Scheduler : computeSchedulerWaitMs()\nrelease delayed support segment
+  SchedulerMain -> Scheduler : getNextDispatchCommand()
+  activate Scheduler
+  Scheduler --> SchedulerMain : DispatchCommand (support segment)
+  deactivate Scheduler
+  SchedulerMain -> Drone2 : UDP CMD|DISPATCH|droneId2|same incident support mission
 end
 
 == Mission Execution ==
@@ -114,8 +147,15 @@ loop while mission remains active
     SchedulerMain -> Scheduler : sendDroneStatusUpdate(update)
     activate Scheduler
     alt mission completed
-      Scheduler -> Scheduler : mark the mission completed
-      Scheduler -> Scheduler : queue the completion and next dispatch/return decision
+      Scheduler -> Scheduler : completeMission(droneId, mission)
+      alt pending mission fits remaining agent and battery
+        Scheduler -> Scheduler : handleDroneAvailability(droneId)\ncanDroneServeAnyPendingMission(droneId)
+        Scheduler -> Scheduler : queue DispatchCommand for the same drone\nwithout returning to base
+        Scheduler --> SchedulerMain : DispatchCommand
+        SchedulerMain -> Drone : UDP CMD|DISPATCH|sameDrone|next mission...
+      else no immediate redispatch
+        Scheduler -> Scheduler : queue the completion and next dispatch/return decision
+      end
     else reroute opportunity created by new request
       Scheduler -> Scheduler : replace the active mission for the en-route drone
       Scheduler -> Scheduler : queue the updated DispatchCommand

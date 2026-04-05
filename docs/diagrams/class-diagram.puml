@@ -1,12 +1,35 @@
 @startuml
 left to right direction
 skinparam classAttributeIconSize 0
-title Iteration 4 Design Overview
+title Iteration 5 Design Overview
 
 package "Application" {
   class Main {
     +{static} TIME_SCALE : int
+    +{static} FLEET_SIZE : int
     +{static} main(args : String[]) : void
+  }
+
+  class MetricsRunner {
+    -{static} RUN_COUNT : int
+    -{static} FLEET_SIZE : int
+    -{static} DEFAULT_TIME_SCALE : int
+    -{static} DEFAULT_CAPACITY_LITERS : double
+    -{static} T_CRITICAL_95_DF_29 : double
+    +{static} main(args : String[]) : void
+    -{static} executeSingleRun(runNumber : int, zoneCsv : String,\neventCsv : String, timeScale : int, capacity : double) : RunResult
+    -{static} averageIdleSeconds(droneSubsystems : List<DroneSubsystem>) : double
+    -{static} averageFlightSeconds(droneSubsystems : List<DroneSubsystem>) : double
+    -{static} printSummary(results : List<RunResult>) : void
+    -{static} computeSampleMean(values : double[]) : double
+    -{static} computeSampleStandardDeviation(values : double[], mean : double) : double
+  }
+
+  class "MetricsRunner.RunResult" as RunResult {
+    -runNumber : int
+    -totalProcessingSeconds : double
+    -averageIdleSeconds : double
+    -averageFlightSeconds : double
   }
 }
 
@@ -29,7 +52,13 @@ package "Subsystems" {
     -droneStatusSeenById : Map<Integer, Boolean>
     -droneFaultById : Map<Integer, FaultType>
     -droneFaultMessageById : Map<Integer, String>
+    -activeIncidentByZoneId : Map<Integer, Integer>
+    -zoneSeverityById : Map<Integer, Severity>
+    -zoneRemainingAgentById : Map<Integer, Double>
     -configuredDroneCount : int
+    -SAME_ZONE_DISPATCH_DELAY_MS : long
+    +setGui(gui : SimulationGUI) : void
+    +setZoneMap(zoneMap : Map<Integer, Zone>) : void
     +putRequest(req : FireRequest) : void
     +getDispatchCommandForDrone(droneId : int) : DispatchCommand
     +getNextDispatchCommand() : DispatchCommand
@@ -40,9 +69,18 @@ package "Subsystems" {
     +getInProgressMissionCount() : int
     +getDroneFaultType(droneId : int) : FaultType
     +getDroneFaultMessage(droneId : int) : String
+    +getAssignedCount(droneId : int) : int
     +setConfiguredDroneCount(count : int) : void
+    +waitUntilQuiescent() : void
+    +isQuiescent() : boolean
     +run() : void
+    -enqueueMission(req : FireRequest) : void
+    -enqueueMissionSegments(req : FireRequest, incidentId : int) : int
+    -attemptRerouteForNewMission(newMission : Mission) : boolean
+    -dispatchNextIfPossible() : void
+    -handleDroneAvailability(droneId : int) : void
     -buildDispatchCommand(droneId : int, mission : Mission) : DispatchCommand
+    -computeSchedulerWaitMs() : long
     -handleHardFault(droneId : int, mission : Mission, update : DroneStatusUpdate) : void
     -updateGui() : void
   }
@@ -69,6 +107,8 @@ package "Subsystems" {
     -scheduler : Scheduler
     -engine : DroneExecutionEngine
     +run() : void
+    +getIdleSeconds() : double
+    +getFlightSeconds() : double
   }
 
   class "Drone_subsystem.DroneExecutionEngine" as DroneExecutionEngine {
@@ -86,11 +126,18 @@ package "Subsystems" {
     -faultDeadlineMs : long
     -faultTriggered : boolean
     -resetCompleteAtMs : long
+    -metricsLock : Object
+    -stateEnteredAtMs : long
+    -totalIdleMs : long
+    -totalFlightMs : long
     +submitCommand(command : DispatchCommand) : void
     +getCurrentState() : DroneState
+    +getIdleSeconds() : double
+    +getFlightSeconds() : double
     +run() : void
     -armFaultWindow(command : DispatchCommand) : void
     -advanceResetRecovery() : void
+    -computeDropDurationForCurrentMission() : double
     -triggerStuckMidFlightFault() : void
     -triggerNozzleJammedFault() : void
     -injectPacketLossAndRetry(state : DroneState, missionId : int, message : String) : void
@@ -125,6 +172,8 @@ package "Domain" {
   }
 
   class "Drone_subsystem.Drone" as Drone {
+    -remainingAgent : double
+    -remainingBattery : double
     +configure(loadCapacity : double, speed : int, battery : double, dropTime : double) : void
     +resetDefaults() : void
     +useAgent(amount : double) : double
@@ -132,6 +181,11 @@ package "Domain" {
     +travelTimeTo(x : double, y : double) : double
     +travelTimeToHome() : double
     +refill() : void
+    +getRemainingAgent() : double
+    +getRemainingBattery() : double
+    +estimateDropTimeSeconds(agentLiters : double) : double
+    +getLoadCapacity() : double
+    +getFullBattery() : double
   }
 
   class "Drone_subsystem.Zone" as Zone {
@@ -186,11 +240,23 @@ package "Types" {
 
   class Mission {
     -missionId : int
+    -incidentId : int
     -fireRequest : FireRequest
+    -assignedAgentLiters : double
+    -remainingAgentLiters : double
+    -earliestDispatchTimeMs : long
     -status : MissionStatus
+    +{static} allocateIncidentId() : int
+    +{static} resetIds() : void
     +getMissionId() : int
+    +getIncidentId() : int
     +getFireRequest() : FireRequest
     +getZoneId() : int
+    +getAssignedAgentLiters() : double
+    +getRemainingAgentLiters() : double
+    +consumeAssignedAgent(amount : double) : double
+    +isSegmentComplete() : boolean
+    +getEarliestDispatchTimeMs() : long
     +setStatus(status : MissionStatus) : void
   }
 
@@ -262,11 +328,15 @@ package "Launchers (UDP mode)" {
 
 package "GUI" {
   class "gui.SimulationGUI" as SimulationGUI {
+    +setZoneMap(zoneMap : Map<Integer, Zone>) : void
     +setDroneState(state : String) : void
     +setActiveFires(count : int) : void
     +log(message : String) : void
     +setConfiguredDroneCount(count : int) : void
     +updateDroneStatus(droneId : int, state : String, faultType : FaultType, note : String) : void
+    +updateDroneTelemetry(droneId : int, state : String, faultType : FaultType,\nnote : String, remainingAgent : double, remainingBattery : double,\npositionX : double, positionY : double, zoneId : int) : void
+    +updateZoneStatus(zoneId : int, zoneState : String, severity : String,\nremainingFoam : double) : void
+    +updateFleetSummary(healthyCount : int, faultyCount : int,\nreadyQueueCount : int) : void
     -ensureDroneLabel(droneId : int) : JLabel
     -applyDroneLabelColors(label : JLabel, state : String, faultType : FaultType) : void
   }
@@ -277,6 +347,13 @@ Main ..> FireIncidentSubsystem : creates
 Main ..> DroneSubsystem : creates N
 Main ..> SimulationGUI : creates
 Main ..> Zone : loadZones()
+MetricsRunner ..> Scheduler : creates per run
+MetricsRunner ..> FireIncidentSubsystem : creates per run
+MetricsRunner ..> DroneSubsystem : creates N
+MetricsRunner ..> Zone : loadZones()
+MetricsRunner ..> Drone : resetDefaults()/configure()
+MetricsRunner ..> Mission : resetIds()
+MetricsRunner --> RunResult
 
 FireIncidentSubsystem --> Scheduler : putRequest/getCompletion\n(GUI mode)
 Scheduler --> DispatchCommand

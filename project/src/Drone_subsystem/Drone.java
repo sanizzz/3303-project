@@ -143,6 +143,19 @@ public class Drone {
         return totalExtinguishingTime;
     }
 
+    /**
+     * This converts an assigned agent amount into a suppression duration so partial mission
+     * segments still take realistic drop time without assuming a full tank every time.
+     */
+    public static synchronized double estimateDropTimeSeconds(double agentLiters) {
+        if (agentLiters <= 0.0) {
+            return 0.0;
+        }
+        return (agentLiters / DISCHARGE_RATE)
+                + (2 * NOZZLE_OPEN_CLOSE_TIME)
+                + (2 * ASCEND_DESCEND_SPEED);
+    }
+
     public static int getHomeX() {
         return HOME_X;
     }

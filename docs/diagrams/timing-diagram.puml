@@ -1,24 +1,22 @@
 @startuml
-title Iteration 4 Timing Diagram
+title Iteration 5 Timing Diagram
 scale 100 as 150 pixels
 skinparam ParticipantPadding 30
 skinparam ArrowFontSize 11
 
-' Main.TIME_SCALE = 20
-' Scheduler wait = 200 ms
-' Drone tick = 100 ms
-' Soft reset = 6.0 simulated sec = 300 ms real
-' Packet retry = 2.0 simulated sec = 100 ms real
-' Visual gaps between scenario blocks are for readability only.
 
+robust "MetricsRunner" as Metrics
 robust "Fire_Subsystem" as Fire
 robust "Scheduler" as Scheduler
 robust "Drone_1" as D1
+robust "Drone_2" as D2
 
 @0
+Metrics is RUN_01_ACTIVE
 Fire is RUNNING
 Scheduler is IDLE
 D1 is IDLE
+D2 is IDLE
 
 @0 <-> @700 : Scenario 1\nStuck Mid-Flight
 @25 <-> @100 : \n\nputRequest(req)\nnotifyAll()
@@ -89,8 +87,64 @@ Scheduler is WAITING_FOR_DRONE
 D1 is EN_ROUTE
 
 @2000
+Metrics is WAITING_FOR_QUIESCENCE
 Fire is TIMED_WAITING
 Scheduler is WAITING_FOR_DRONE
 D1 is EN_ROUTE
+D2 is IDLE
+
+@2025 <-> @2100 : \n\nwaitUntilQuiescent()\nqueue drain check
+@2125 <-> @2200 : \n\naverageIdleSeconds()\naverageFlightSeconds()
+@2200
+Metrics is RUN_01_RECORDED
+Fire is RUNNING
+Scheduler is IDLE
+D1 is IDLE
+D2 is IDLE
+
+@2225 <-> @2300 : \n\nrunNumber = 2..30\nrepeat executeSingleRun()
+@2300
+Metrics is RUN_N_ACTIVE
+Fire is RUNNING
+Scheduler is IDLE
+D1 is IDLE
+D2 is IDLE
+
+@2300 <-> @3200 : Scenario 4\nMulti-Drone Dispatch
+@2325 <-> @2400 : \n\nputRequest(req)\nenqueueMissionSegments(...)
+@2400
+Fire is TIMED_WAITING
+Scheduler is DISPATCHING
+D1 is EN_ROUTE
+D2 is IDLE
+
+@2425 <-> @2775 : \n\nSAME_ZONE_DISPATCH_DELAY_MS\ncollision-avoidance gap
+@2500
+Scheduler is WAITING_FOR_DRONE
+
+@2800
+Scheduler is DISPATCHING
+D2 is EN_ROUTE
+
+@2900
+Scheduler is WAITING_FOR_DRONE
+D1 is DROPPING_AGENT
+D2 is EN_ROUTE
+
+@3050
+Scheduler is WAITING_FOR_DRONE
+D1 is RETURNING
+D2 is DROPPING_AGENT
+
+@3200
+Metrics is PRINTING_SUMMARY
+Fire is RUNNING
+Scheduler is IDLE
+D1 is IDLE
+D2 is IDLE
+
+@3225 <-> @3300 : \n\ncomputeSampleMean()\ncomputeSampleStandardDeviation()\n95% confidence interval
+@3300
+Metrics is COMPLETE
 
 @enduml

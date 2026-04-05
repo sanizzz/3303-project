@@ -14,6 +14,8 @@ public class FireRequest {
     private final FaultType injectedFaultType;
     private final int faultTriggerSeconds;
     private boolean faultPending;
+    private long detectedAtNs = -1L;
+    private long extinguishedAtNs = -1L;
 
     // --- Fields for Simulation Logic (Used by Drone) ---
     private double requiredFoam; // How much water/foam is needed
@@ -100,37 +102,89 @@ public class FireRequest {
         return faultPending;
     }
 
+    /**
+     * This records when the incident first entered the system for metrics collection.
+     * It only writes once so the same request can safely pass through several subsystems.
+     */
+    public synchronized void markDetectedAtIfUnset(long timestampNs) {
+        if (detectedAtNs < 0L) {
+            detectedAtNs = timestampNs;
+        }
+    }
+
+    /**
+     * This records when the incident was fully extinguished.
+     * It only writes once so duplicate completions cannot skew the measurement.
+     */
+    public synchronized void markExtinguishedAtIfUnset(long timestampNs) {
+        if (extinguishedAtNs < 0L) {
+            extinguishedAtNs = timestampNs;
+        }
+    }
+
+    /**
+     * This exposes the end-to-end incident handling time required by the Iteration 5 metrics.
+     * It returns -1 until the request has both timestamps.
+     */
+    public synchronized double getDetectionToExtinguishmentSeconds() {
+        if (detectedAtNs < 0L || extinguishedAtNs < 0L || extinguishedAtNs < detectedAtNs) {
+            return -1.0;
+        }
+        return (extinguishedAtNs - detectedAtNs) / 1_000_000_000.0;
+    }
+
     // --- Methods for Drone Logic ---
 
-    public double getRequiredFoam() {
+    /**
+     * This returns the fire-level remaining agent requirement.
+     * It is synchronized because several mission segments can now report against the same fire.
+     */
+    public synchronized double getRequiredFoam() {
         return requiredFoam;
     }
 
     /**
      * This lowers the amount of foam still needed for the fire.
      */
-    public void updateRequiredFoam(double amount) {
+    public synchronized void updateRequiredFoam(double amount) {
         this.requiredFoam -= amount;
         if (this.requiredFoam < 0) {
             this.requiredFoam = 0;
         }
     }
 
-    public boolean isResolved() {
+    /**
+     * This exposes the shared completion flag across scheduler, drones, and metrics runs.
+     */
+    public synchronized boolean isResolved() {
         return isResolved;
     }
 
-    public void setResolved(boolean resolved) {
+    /**
+     * This changes the resolved flag under the request monitor so concurrent status/completion
+     * updates cannot race with GUI or metrics reads.
+     */
+    public synchronized void setResolved(boolean resolved) {
         this.isResolved = resolved;
     }
 
-    public void setInProgress(boolean inProgress) {
+    /**
+     * This tracks whether the fire still has any active work associated with it.
+     */
+    public synchronized void setInProgress(boolean inProgress) {
         this.inProgress = inProgress;
+    }
+
+    /**
+     * This lets the scheduler decide whether a zone still has active drone work attached to it.
+     */
+    public synchronized boolean isInProgress() {
+        return inProgress;
     }
 
     @Override
     public String toString() {
         return String.format("Request[Zone %d | %s | %s | Foam Needed: %.1f | Fault=%s@%ds | Pending=%s]",
-                zoneId, type, severity, requiredFoam, injectedFaultType, faultTriggerSeconds, faultPending);
+                zoneId, type, severity, getRequiredFoam(), injectedFaultType, faultTriggerSeconds, faultPending);
     }
 }

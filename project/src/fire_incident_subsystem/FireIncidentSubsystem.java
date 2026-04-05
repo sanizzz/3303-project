@@ -17,6 +17,8 @@ import java.io.InputStreamReader;
 import java.io.Reader;
 import java.net.DatagramSocket;
 import java.time.LocalTime;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * This class reads the fire events from the CSV file and sends them to the scheduler.
@@ -33,6 +35,7 @@ public class FireIncidentSubsystem implements Runnable {
     private final String schedulerHost;
     private final int schedulerPort;
     private final int completionPort;
+    private final List<FireRequest> submittedRequests = new ArrayList<>();
 
     public FireIncidentSubsystem(Scheduler scheduler, SimulationGUI gui) {
         this(scheduler, gui, null, 1, false, "localhost", UdpConfig.FIRE_TO_SCHED_PORT, UdpConfig.SCHED_TO_FIRE_PORT);
@@ -111,6 +114,8 @@ public class FireIncidentSubsystem implements Runnable {
                             req.getSeverity(),
                             req.getInjectedFaultType(),
                             req.getFaultTriggerSeconds()));
+                    req.markDetectedAtIfUnset(System.nanoTime());
+                    recordSubmittedRequest(req);
                     if (useUdp) {
                         String payload = buildRequestPayload(req);
                         UdpUtil.send(schedulerHost, schedulerPort, payload);
@@ -139,6 +144,7 @@ public class FireIncidentSubsystem implements Runnable {
                 while (completionsReceived < totalEventsSent && !Thread.currentThread().isInterrupted()) {
                     String msg = UdpUtil.receive(socket);
                     if (msg.startsWith("COMP|")) {
+                        markCompletedRequestFromUdp(msg);
                         completionsReceived++;
                         log("[Fire] " + describeCompletionMessage(msg, completionsReceived, totalEventsSent));
                     }
@@ -220,5 +226,52 @@ public class FireIncidentSubsystem implements Runnable {
                     parts[1], parts[2], receivedCount, expectedCount);
         }
         return "Completion received via UDP: " + msg;
+    }
+
+    private synchronized void recordSubmittedRequest(FireRequest request) {
+        submittedRequests.add(request);
+    }
+
+    /**
+     * This reports the average end-to-end latency from incident detection to extinguishment
+     * across the requests seen by this subsystem during one run.
+     */
+    public synchronized double getAverageDetectionToExtinguishmentSeconds() {
+        double total = 0.0;
+        int measuredCount = 0;
+        for (FireRequest request : submittedRequests) {
+            double latencySeconds = request.getDetectionToExtinguishmentSeconds();
+            if (latencySeconds >= 0.0) {
+                total += latencySeconds;
+                measuredCount++;
+            }
+        }
+        return measuredCount == 0 ? 0.0 : total / measuredCount;
+    }
+
+    private synchronized void markCompletedRequestFromUdp(String msg) {
+        String[] parts = msg.split("\\|");
+        if (parts.length < 3) {
+            return;
+        }
+
+        boolean resolved = Boolean.parseBoolean(parts[2]);
+        if (!resolved) {
+            return;
+        }
+
+        int zoneId;
+        try {
+            zoneId = Integer.parseInt(parts[1]);
+        } catch (NumberFormatException ex) {
+            return;
+        }
+
+        for (FireRequest request : submittedRequests) {
+            if (request.getZoneId() == zoneId && request.getDetectionToExtinguishmentSeconds() < 0.0) {
+                request.markExtinguishedAtIfUnset(System.nanoTime());
+                return;
+            }
+        }
     }
 }

@@ -25,6 +25,7 @@ public class SchedulerMain {
     public static void main(String[] args) {
         String zoneCsv = getArg(args, "--zoneCsv", "sampleData/sample_zone_file.csv");
         int drones = parseIntArg(args, "--drones", 1);
+        int timeScale = parseIntArg(args, "--timeScale", 20);
 
         int firePort = parseIntArg(args, "--firePort", UdpConfig.FIRE_TO_SCHED_PORT);
         int droneStatusPort = parseIntArg(args, "--droneStatusPort", UdpConfig.DRONE_STATUS_PORT);
@@ -37,7 +38,7 @@ public class SchedulerMain {
         int completionPort = parseIntArg(args, "--completionPort", UdpConfig.SCHED_TO_FIRE_PORT);
 
         Map<Integer, Zone> zoneMap = Zone.loadZones(zoneCsv);
-        Scheduler scheduler = new Scheduler(null, zoneMap, drones);
+        Scheduler scheduler = new Scheduler(null, zoneMap, drones, timeScale);
         Thread schedulerThread = new Thread(scheduler, "scheduler-core");
         schedulerThread.start();
 
@@ -57,6 +58,7 @@ public class SchedulerMain {
         completionForwarder.start();
 
         log("SchedulerMain running.");
+        log("Scheduler time scale: x" + timeScale);
         log("Fire listen port: " + firePort);
         log("Drone status listen port: " + droneStatusPort);
         log("Drone command base target: " + droneHost + ":" + droneCommandBasePort);
@@ -167,22 +169,26 @@ public class SchedulerMain {
                 FireRequest req = mission.getFireRequest();
                 if (cmd.getFaultType() == FaultType.NONE) {
                     payload = String.format(
-                            "CMD|DISPATCH|%d|%d|%d|%s|%s|%s",
+                            "CMD|DISPATCH|%d|%d|%d|%d|%s|%s|%s|%.3f",
                             targetDroneId,
                             mission.getMissionId(),
-                            req.getZoneId(),
-                            req.getTime(),
-                            req.getType(),
-                            req.getSeverity());
-                } else {
-                    payload = String.format(
-                            "CMD|DISPATCH|%d|%d|%d|%s|%s|%s|%s|%d",
-                            targetDroneId,
-                            mission.getMissionId(),
+                            mission.getIncidentId(),
                             req.getZoneId(),
                             req.getTime(),
                             req.getType(),
                             req.getSeverity(),
+                            mission.getAssignedAgentLiters());
+                } else {
+                    payload = String.format(
+                            "CMD|DISPATCH|%d|%d|%d|%d|%s|%s|%s|%.3f|%s|%d",
+                            targetDroneId,
+                            mission.getMissionId(),
+                            mission.getIncidentId(),
+                            req.getZoneId(),
+                            req.getTime(),
+                            req.getType(),
+                            req.getSeverity(),
+                            mission.getAssignedAgentLiters(),
                             cmd.getFaultType().name(),
                             cmd.getFaultTriggerSeconds());
                 }

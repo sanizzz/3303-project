@@ -32,6 +32,7 @@ public class DroneExecutionEngine implements Runnable {
 
     private final Object commandLock = new Object();
     private final Object stateWaitLock = new Object();
+    private final Object metricsLock = new Object();
     private final LinkedList<DispatchCommand> commandQueue = new LinkedList<>();
 
     private DroneState currentState = DroneState.IDLE;
@@ -43,6 +44,9 @@ public class DroneExecutionEngine implements Runnable {
     private long faultDeadlineMs = -1L;
     private boolean faultTriggered;
     private long resetCompleteAtMs = -1L;
+    private long stateEnteredAtMs = System.currentTimeMillis();
+    private long totalIdleMs;
+    private long totalFlightMs;
 
     /**
      * This sets up one drone engine with the map, time scale, and callback methods.
@@ -85,25 +89,29 @@ public class DroneExecutionEngine implements Runnable {
     public void run() {
         log(String.format("[Drone-%d] Iteration 4 drone engine started. State=%s", droneId, currentState));
 
-        while (!Thread.currentThread().isInterrupted()) {
-            DispatchCommand command = waitForCommandIfIdle();
-            if (command != null) {
-                handleCommand(command);
-                drainExtraCommands();
-            }
+        try {
+            while (!Thread.currentThread().isInterrupted()) {
+                DispatchCommand command = waitForCommandIfIdle();
+                if (command != null) {
+                    handleCommand(command);
+                    drainExtraCommands();
+                }
 
-            if (!hasActiveWork()) {
-                continue;
-            }
+                if (!hasActiveWork()) {
+                    continue;
+                }
 
-            waitForNextSimulationStep();
-            if (Thread.currentThread().isInterrupted()) {
-                break;
-            }
+                waitForNextSimulationStep();
+                if (Thread.currentThread().isInterrupted()) {
+                    break;
+                }
 
-            if (hasActiveWork()) {
-                advanceOneTick();
+                if (hasActiveWork()) {
+                    advanceOneTick();
+                }
             }
+        } finally {
+            accumulateElapsedForCurrentState();
         }
 
         log(String.format("[Drone-%d] Drone engine shutting down.", droneId));
@@ -204,10 +212,7 @@ public class DroneExecutionEngine implements Runnable {
         // does not keep failing again and again after being reassigned.
         armFaultWindow(command);
         activeMission = mission;
-        activeMission.getFireRequest().setInProgress(true);
-        activeMission.getFireRequest().setResolved(false);
-        targetZone.setZoneState(Zone.ZoneState.ON_FIRE);
-        remainingDropSeconds = Drone.getTotalExtinguishingTime();
+        remainingDropSeconds = computeDropDurationForCurrentMission();
 
         transitionTo(DroneState.EN_ROUTE, "DISPATCH", mission.getMissionId());
         progressTickCounter = 0;
@@ -293,7 +298,7 @@ public class DroneExecutionEngine implements Runnable {
                 "En route to Zone " + activeMission.getZoneId());
 
         if (arrived) {
-            remainingDropSeconds = Drone.getTotalExtinguishingTime();
+            remainingDropSeconds = computeDropDurationForCurrentMission();
             transitionTo(DroneState.DROPPING_AGENT, "ARRIVED", activeMission.getMissionId());
             sendStatus(DroneState.DROPPING_AGENT, activeMission.getMissionId(),
                     "Arrived at Zone " + activeMission.getZoneId() + ", beginning agent drop");
@@ -317,13 +322,14 @@ public class DroneExecutionEngine implements Runnable {
             return;
         }
 
-        double dropped = drone.useAgent(Drone.getLoadCapacity());
-        activeMission.getFireRequest().updateRequiredFoam(dropped);
+        double plannedDrop = activeMission.getRemainingAgentLiters();
+        double dropped = drone.useAgent(plannedDrop);
+        activeMission.consumeAssignedAgent(dropped);
         sendStatus(DroneState.DROPPING_AGENT, activeMission.getMissionId(),
-                String.format("Drop complete, remaining foam needed=%.1fL",
-                        activeMission.getFireRequest().getRequiredFoam()));
+                String.format("Drop complete, segment load remaining=%.1fL",
+                        activeMission.getRemainingAgentLiters()));
 
-        if (activeMission.getFireRequest().getRequiredFoam() <= 0) {
+        if (activeMission.isSegmentComplete()) {
             completeMission();
             return;
         }
@@ -337,7 +343,7 @@ public class DroneExecutionEngine implements Runnable {
             return;
         }
 
-        remainingDropSeconds = Drone.getTotalExtinguishingTime();
+        remainingDropSeconds = computeDropDurationForCurrentMission();
     }
 
     /**
@@ -348,13 +354,6 @@ public class DroneExecutionEngine implements Runnable {
             return;
         }
 
-        Zone zone = zoneMap.get(activeMission.getZoneId());
-        if (zone != null) {
-            zone.setZoneState(Zone.ZoneState.EXTINGUISHED);
-        }
-
-        activeMission.getFireRequest().setResolved(true);
-        activeMission.getFireRequest().setInProgress(false);
         int missionId = activeMission.getMissionId();
         int zoneId = activeMission.getZoneId();
         activeMission = null;
@@ -380,7 +379,7 @@ public class DroneExecutionEngine implements Runnable {
 
         drone.refill();
 
-        if (activeMission != null && activeMission.getFireRequest().getRequiredFoam() > 0) {
+        if (activeMission != null && !activeMission.isSegmentComplete()) {
             transitionTo(DroneState.IDLE, "REFILLED_FOR_CONTINUATION", activeMission.getMissionId());
             sendStatus(DroneState.IDLE, activeMission.getMissionId(),
                     "Refilled at base, ready for next trip to Zone " + activeMission.getZoneId());
@@ -513,8 +512,6 @@ public class DroneExecutionEngine implements Runnable {
 
         int missionId = activeMission.getMissionId();
         int zoneId = activeMission.getZoneId();
-        activeMission.getFireRequest().setInProgress(false);
-        activeMission.getFireRequest().setResolved(false);
         faultTriggered = true;
 
         transitionTo(DroneState.OFFLINE, "NOZZLE_JAMMED", missionId);
@@ -563,6 +560,17 @@ public class DroneExecutionEngine implements Runnable {
     }
 
     /**
+     * This computes how long the current suppression pass should take for the remaining
+     * mission segment instead of always assuming a full-tank discharge.
+     */
+    private double computeDropDurationForCurrentMission() {
+        if (activeMission == null) {
+            return 0.0;
+        }
+        return Drone.estimateDropTimeSeconds(activeMission.getRemainingAgentLiters());
+    }
+
+    /**
      * Converts simulated seconds into the real wait time.
      */
     private long scaledMillisForSimulationSeconds(double simulationSeconds) {
@@ -604,10 +612,60 @@ public class DroneExecutionEngine implements Runnable {
      * This updates the drone state and writes it to the log.
      */
     private void transitionTo(DroneState newState, String event, int missionId) {
+        accumulateElapsedForCurrentState();
         DroneState oldState = currentState;
         currentState = newState;
         log(String.format("[Drone-%d] %s --(%s)--> %s [Mission %d]",
                 droneId, oldState, event, newState, missionId));
+    }
+
+    /**
+     * This charges elapsed wall-clock time to the state being left so MetricsRunner can
+     * measure how long each drone thread spent idle versus actually flying.
+     */
+    private void accumulateElapsedForCurrentState() {
+        long now = System.currentTimeMillis();
+        long elapsed = Math.max(0L, now - stateEnteredAtMs);
+        // This monitor keeps the timing counters consistent while another thread snapshots
+        // them for the metrics report.
+        synchronized (metricsLock) {
+            if (currentState == DroneState.IDLE) {
+                totalIdleMs += elapsed;
+            } else if (currentState == DroneState.EN_ROUTE || currentState == DroneState.RETURNING) {
+                totalFlightMs += elapsed;
+            }
+            stateEnteredAtMs = now;
+        }
+    }
+
+    /**
+     * This snapshots accumulated idle time for one drone so the metrics runner can average
+     * waiting behaviour across the full fleet.
+     */
+    public double getIdleSeconds() {
+        // This monitor is used so the metrics reader sees one coherent idle-time snapshot.
+        synchronized (metricsLock) {
+            long liveIdleMs = totalIdleMs;
+            if (currentState == DroneState.IDLE) {
+                liveIdleMs += Math.max(0L, System.currentTimeMillis() - stateEnteredAtMs);
+            }
+            return liveIdleMs / 1000.0;
+        }
+    }
+
+    /**
+     * This snapshots accumulated flight time for one drone so MetricsRunner can report how
+     * much real execution time the fleet spent airborne.
+     */
+    public double getFlightSeconds() {
+        // This monitor is used so the metrics reader sees one coherent flight-time snapshot.
+        synchronized (metricsLock) {
+            long liveFlightMs = totalFlightMs;
+            if (currentState == DroneState.EN_ROUTE || currentState == DroneState.RETURNING) {
+                liveFlightMs += Math.max(0L, System.currentTimeMillis() - stateEnteredAtMs);
+            }
+            return liveFlightMs / 1000.0;
+        }
     }
 
     /**

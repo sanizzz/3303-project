@@ -13,6 +13,7 @@ import java.util.Map;
 
 public class Main {
     public static final int TIME_SCALE = 20;
+    public static final int FLEET_SIZE = 10;
 
     public static void main(String[] args) {
         System.out.println(LogUtil.stamp("[System] DEMO MODE ENABLED: Speed x" + TIME_SCALE));
@@ -29,16 +30,12 @@ public class Main {
 
         final SimulationGUI[] guiRef = new SimulationGUI[1];
         try {
-            SwingUtilities.invokeAndWait(() -> guiRef[0] = new SimulationGUI(zoneMap));
+            SwingUtilities.invokeAndWait(() -> guiRef[0] = new SimulationGUI(zoneMap, zoneCsvPath));
         } catch (Exception e) {
             throw new RuntimeException("Failed to create GUI", e);
         }
 
         SimulationGUI gui = guiRef[0];
-
-        // Iteration 3 GUI mode: same-process demo with multi-drone scheduler support.
-        Scheduler scheduler = new Scheduler(gui, zoneMap, 1);
-        FireIncidentSubsystem fireSubsystem = new FireIncidentSubsystem(scheduler, gui, null, TIME_SCALE);
 
         final boolean[] started = { false };
         gui.setStartAction(() -> {
@@ -53,23 +50,38 @@ public class Main {
                 return;
             }
 
-            fireSubsystem.setCsvFile(csvFile);
+            String selectedZoneCsvPath = gui.getSelectedZoneCsvFile();
+            if (selectedZoneCsvPath == null || selectedZoneCsvPath.isBlank()) {
+                selectedZoneCsvPath = zoneCsvPath;
+            }
 
-            int drones = gui.getNumDrones();
+            Map<Integer, Zone> selectedZoneMap = Zone.loadZones(selectedZoneCsvPath);
+            if (selectedZoneMap.isEmpty()) {
+                gui.log("Zone CSV did not load. Check the selected file.");
+                return;
+            }
+
+            gui.setZoneMap(selectedZoneMap);
+
+            int drones = FLEET_SIZE;
             double capacity = gui.getCapacity();
             gui.log("[Main] Start pressed.");
             gui.log("[Main] Config -> Drones=" + drones + ", Capacity=" + capacity + "L");
+            gui.log("[Main] Zone map -> " + selectedZoneCsvPath);
+
+            Scheduler scheduler = new Scheduler(gui, selectedZoneMap, FLEET_SIZE, TIME_SCALE);
+            FireIncidentSubsystem fireSubsystem = new FireIncidentSubsystem(scheduler, gui, csvFile, TIME_SCALE);
 
             scheduler.setConfiguredDroneCount(drones);
             gui.setConfiguredDroneCount(drones);
-            Drone.configure(capacity, Drone.getSpeed(), Drone.getFullBattery(), Drone.getTotalExtinguishingTime());
+            Drone.configure(capacity, Drone.getSpeed(), Drone.getFullBattery(), Drone.estimateDropTimeSeconds(capacity));
 
             Thread schedulerThread = new Thread(scheduler, "scheduler-thread");
             Thread fireThread = new Thread(fireSubsystem, "fire-thread");
 
             schedulerThread.start();
-            for (int i = 1; i <= Math.max(1, drones); i++) {
-                DroneSubsystem droneSubsystem = new DroneSubsystem(i, scheduler, zoneMap, gui, TIME_SCALE);
+            for (int i = 1; i <= drones; i++) {
+                DroneSubsystem droneSubsystem = new DroneSubsystem(i, scheduler, selectedZoneMap, gui, TIME_SCALE);
                 Thread droneThread = new Thread(droneSubsystem, "drone-thread-" + i);
                 droneThread.start();
             }
@@ -79,10 +91,13 @@ public class Main {
         });
 
         SwingUtilities.invokeLater(() -> new javax.swing.Timer(250, e -> gui.refresh()).start());
-        gui.log("GUI ready. Load CSV, then press Start.");
+        gui.log("GUI ready. Load event CSV and optional zone CSV, then press Start.");
     }
 
-    private static String resolveExistingPath(String... candidates) {
+    /**
+     * This resolves bundled sample-data paths for both the GUI entry point and the metrics runner.
+     */
+    public static String resolveExistingPath(String... candidates) {
         for (String candidate : candidates) {
             if (new File(candidate).exists()) {
                 return candidate;

@@ -81,4 +81,18 @@ public class DroneSubsystem implements Runnable {
             gui.log(message);
         }
     }
+
+    /**
+     * This exposes the drone's accumulated idle time to the headless metrics runner.
+     */
+    public double getIdleSeconds() {
+        return engine.getIdleSeconds();
+    }
+
+    /**
+     * This exposes the drone's accumulated flight time to the headless metrics runner.
+     */
+    public double getFlightSeconds() {
+        return engine.getFlightSeconds();
+    }
 }
