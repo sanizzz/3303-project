@@ -33,9 +33,12 @@ MetricsRunner -> Drone2 : start metrics-drone-1-2..N thread(s)
 MetricsRunner -> Fire : start metrics-fire-1 thread
 Fire --> MetricsRunner : fire thread joined
 MetricsRunner -> Scheduler : waitUntilQuiescent()
+MetricsRunner -> Scheduler : shutdownThread(schedulerThread)
+MetricsRunner -> Drone : shutdownThread(each droneThread)
 MetricsRunner -> Drone : getIdleSeconds() / getFlightSeconds()\nfor each DroneSubsystem
 MetricsRunner -> Fire : getAverageDetectionToExtinguishmentSeconds()
-MetricsRunner -> MetricsRunner : print single-run Iteration 5 metrics
+MetricsRunner -> MetricsRunner : nanosToSeconds(endNs - startNs)\nbuild RunResult
+MetricsRunner -> MetricsRunner : print 4 single-run Iteration 5 metrics
 
 == Incident Input ==
 Fire -> SchedulerMain : UDP REQ|time|zone|type|severity|faultType|faultTriggerSeconds

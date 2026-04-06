@@ -1,70 +1,87 @@
 @startuml
-title Iteration 4 Fault Handling Timing Diagram
-scale 100 as 220 pixels
-skinparam ParticipantPadding 42
+title Iteration 4 Fault Handling with MetricsRunner Timeline
+scale 100 as 240 pixels
+skinparam ParticipantPadding 44
 skinparam ArrowFontSize 10
 
+robust "MetricsRunner" as Metrics
 robust "Fire_Subsystem" as Fire
 robust "Scheduler" as Scheduler
 robust "Drone_1" as D1
 robust "Drone_2" as D2
 
 @0
+Metrics is STARTUP
 Fire is IDLE
 Scheduler is IDLE
 D1 is IDLE
 D2 is IDLE
 
-@0 <-> @560 : \n\nScenario 1: Stuck Mid-Flight (Soft Fault)
 @40
+Metrics is STARTING_THREADS
+@80
+Metrics is WAITING_FOR_FIRE_THREAD
 Fire is RUNNING
-@80 <-> @160 : \n\nfire detected\nputRequest(req)
-@180
+
+@80 <-> @560 : \n\nScenario 1: Stuck Mid-Flight (Soft Fault)
+@120 <-> @200 : \n\nfire detected\nputRequest(req)
+@220
 Scheduler is DISPATCHING
 D1 is EN_ROUTE
-@260
+@300
 Fire is TIMED_WAITING
 Scheduler is WAITING_FOR_DRONE
-@320
+@360
 D1 is RESETTING
-@320 <-> @430 : \n\nwait(timeout)\nsoft reset window
-@450
-D1 is EN_ROUTE
+@360 <-> @470 : \n\nwait(timeout)\nsoft reset window
 @500
+D1 is EN_ROUTE
+@540
 D1 is DROPPING_AGENT
 @560
 D1 is IDLE
 Scheduler is IDLE
 
-@560 <-> @1180 : \n\nScenario 2: Nozzle Jammed (Hard Fault)
+@560 <-> @1220 : \n\nScenario 2: Nozzle Jammed (Hard Fault)
 @620
 Fire is RUNNING
 @680 <-> @760 : \n\nfire detected\nputRequest(req)
-@780
+@800
 Scheduler is DISPATCHING
 D1 is EN_ROUTE
-@860
+@900
 Scheduler is WAITING_FOR_DRONE
-@940
+@980
 D1 is DROPPING_AGENT
-@1000
+@1060
 D1 is OFFLINE
 Scheduler is DISPATCHING
-@1000 <-> @1100 : \n\nhandleHardFault(...)\nmission requeued
-@1120
-D2 is EN_ROUTE
+@1060 <-> @1160 : \n\nhandleHardFault(...)\nmission requeued to Drone_2
 @1180
+D2 is EN_ROUTE
+@1220
 Scheduler is WAITING_FOR_DRONE
 
-@1180 <-> @1660 : \n\nScenario 3: Packet Loss / Corrupted Messages
-@1240 <-> @1380 : \n\npacket retry delay\nD2 remains EN_ROUTE
-@1460
+@1220 <-> @1720 : \n\nScenario 3: Packet Loss / Corrupted Messages
+@1280 <-> @1420 : \n\npacket retry delay\nD2 remains EN_ROUTE
+@1500
 D2 is DROPPING_AGENT
-@1540
+@1600
 D2 is RETURNING
-@1660
+@1720
 Fire is COMPLETE
 Scheduler is IDLE
 D2 is IDLE
+
+@1760
+Metrics is WAITING_FOR_QUIESCENCE
+@1820
+Metrics is SHUTTING_DOWN_THREADS
+@1820 <-> @1900 : \n\nshutdownThread(scheduler)\nshutdownThread(drone threads)
+@1940
+Metrics is PRINTING_METRICS
+highlight 1940 to 2060 #LightYellow : Total Time to Extinguish All Fires\nAverage Drone Idle Time\nAverage Drone Flight Time\nAverage Detection-to-Extinguishment Time
+@2100
+Metrics is COMPLETE
 
 @enduml
