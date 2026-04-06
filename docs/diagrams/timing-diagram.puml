@@ -1,72 +1,70 @@
 @startuml
-title Iteration 5 Single-Run Metrics Timing
-scale 100 as 150 pixels
-skinparam ParticipantPadding 30
-skinparam ArrowFontSize 11
+title Iteration 4 Fault Handling Timing Diagram
+scale 100 as 220 pixels
+skinparam ParticipantPadding 42
+skinparam ArrowFontSize 10
 
-robust "MetricsRunner" as Metrics
 robust "Fire_Subsystem" as Fire
 robust "Scheduler" as Scheduler
 robust "Drone_1" as D1
-robust "Drone_2..N" as Fleet
+robust "Drone_2" as D2
 
 @0
-Metrics is STARTUP
-Fire is CREATED
-Scheduler is CREATED
-D1 is CREATED
-Fleet is CREATED
-
-@25 <-> @100 : \n\nexecuteSingleRun(1, ...)\nreset defaults and load CSV data
-@100
-Metrics is STARTING_THREADS
-Fire is READY
+Fire is IDLE
 Scheduler is IDLE
 D1 is IDLE
-Fleet is IDLE
+D2 is IDLE
 
-@125 <-> @200 : \n\nstart scheduler, drone,\nand fire threads
-@200
-Metrics is WAITING_FOR_FIRE_THREAD
+@0 <-> @560 : \n\nScenario 1: Stuck Mid-Flight (Soft Fault)
+@40
 Fire is RUNNING
+@80 <-> @160 : \n\nfire detected\nputRequest(req)
+@180
 Scheduler is DISPATCHING
 D1 is EN_ROUTE
-Fleet is ACTIVE
-
-@225 <-> @900 : \n\nfire events submitted,\nmissions dispatched,\nand completions received
-@900
-Metrics is WAITING_FOR_QUIESCENCE
-Fire is COMPLETE
+@260
+Fire is TIMED_WAITING
 Scheduler is WAITING_FOR_DRONE
-D1 is RETURNING
-Fleet is RETURNING
+@320
+D1 is RESETTING
+@320 <-> @430 : \n\nwait(timeout)\nsoft reset window
+@450
+D1 is EN_ROUTE
+@500
+D1 is DROPPING_AGENT
+@560
+D1 is IDLE
+Scheduler is IDLE
 
-@925 <-> @1025 : \n\nfireThread.join()\nwaitUntilQuiescent()
-@1025
-Metrics is COLLECTING_METRICS
+@560 <-> @1180 : \n\nScenario 2: Nozzle Jammed (Hard Fault)
+@620
+Fire is RUNNING
+@680 <-> @760 : \n\nfire detected\nputRequest(req)
+@780
+Scheduler is DISPATCHING
+D1 is EN_ROUTE
+@860
+Scheduler is WAITING_FOR_DRONE
+@940
+D1 is DROPPING_AGENT
+@1000
+D1 is OFFLINE
+Scheduler is DISPATCHING
+@1000 <-> @1100 : \n\nhandleHardFault(...)\nmission requeued
+@1120
+D2 is EN_ROUTE
+@1180
+Scheduler is WAITING_FOR_DRONE
+
+@1180 <-> @1660 : \n\nScenario 3: Packet Loss / Corrupted Messages
+@1240 <-> @1380 : \n\npacket retry delay\nD2 remains EN_ROUTE
+@1460
+D2 is DROPPING_AGENT
+@1540
+D2 is RETURNING
+@1660
 Fire is COMPLETE
 Scheduler is IDLE
-D1 is IDLE
-Fleet is IDLE
-
-@1050 <-> @1125 : \n\naverageIdleSeconds()\naverageFlightSeconds()\ngetAverageDetectionToExtinguishmentSeconds()
-@1125
-Metrics is SHUTTING_DOWN_THREADS
-Fire is COMPLETE
-Scheduler is IDLE
-D1 is IDLE
-Fleet is IDLE
-
-@1150 <-> @1225 : \n\nshutdownThread(scheduler)\nshutdownThread(drone threads)
-@1225
-Metrics is PRINTING_METRICS
-Fire is COMPLETE
-Scheduler is STOPPED
-D1 is STOPPED
-Fleet is STOPPED
-
-@1250 <-> @1325 : \n\nTotal Time to Extinguish All Fires\nAverage Drone Idle Time\nAverage Drone Flight Time\nAverage Detection-to-Extinguishment Time
-@1325
-Metrics is COMPLETE
+D2 is IDLE
 
 @enduml
