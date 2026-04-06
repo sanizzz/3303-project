@@ -10,16 +10,13 @@ import java.util.List;
 import java.util.Map;
 
 /**
- * This class runs the simulation 30 times without the Swing GUI and prints the timing metrics
- * required by Iteration 5.
+ * This class runs one headless simulation sample and prints the Iteration 5 timing metrics.
  */
 public class MetricsRunner {
 
-    private static final int RUN_COUNT = 30;
     private static final int FLEET_SIZE = 10;
     private static final int DEFAULT_TIME_SCALE = 200;
     private static final double DEFAULT_CAPACITY_LITERS = 15.0;
-    private static final double T_CRITICAL_95_DF_29 = 2.04523;
 
     /**
      * This is the headless entry point used for the grading metrics pass.
@@ -36,19 +33,12 @@ public class MetricsRunner {
         int timeScale = parseIntArg(args, "--timeScale", DEFAULT_TIME_SCALE);
         double capacity = parseDoubleArg(args, "--capacity", DEFAULT_CAPACITY_LITERS);
 
-        List<RunResult> results = new ArrayList<>();
-        for (int runNumber = 1; runNumber <= RUN_COUNT; runNumber++) {
-            RunResult result = executeSingleRun(runNumber, zoneCsv, eventCsv, timeScale, capacity);
-            results.add(result);
-            System.out.printf("Run %02d | Total Time: %.3fs | Avg Idle: %.3fs | Avg Flight: %.3fs | Avg Detect->Extinguish: %.3fs%n",
-                    result.runNumber,
-                    result.totalProcessingSeconds,
-                    result.averageIdleSeconds,
-                    result.averageFlightSeconds,
-                    result.averageDetectionToExtinguishmentSeconds);
-        }
-
-        printSummary(results);
+        RunResult result = executeSingleRun(1, zoneCsv, eventCsv, timeScale, capacity);
+        System.out.printf("Total Time to Extinguish All Fires: %.3fs%n", result.totalProcessingSeconds);
+        System.out.printf("Average Drone Idle Time: %.3fs%n", result.averageIdleSeconds);
+        System.out.printf("Average Drone Flight Time: %.3fs%n", result.averageFlightSeconds);
+        System.out.printf("Average Detection-to-Extinguishment Time: %.3fs%n",
+                result.averageDetectionToExtinguishmentSeconds);
     }
 
     /**
@@ -135,81 +125,6 @@ public class MetricsRunner {
             total += droneSubsystem.getFlightSeconds();
         }
         return droneSubsystems.isEmpty() ? 0.0 : total / droneSubsystems.size();
-    }
-
-    /**
-     * This prints the sample mean, sample standard deviation, and the 95% confidence interval
-     * for the 30 total-processing-time measurements.
-     */
-    private static void printSummary(List<RunResult> results) {
-        double[] totals = new double[results.size()];
-        double[] detectionToExtinguishmentAverages = new double[results.size()];
-        for (int i = 0; i < results.size(); i++) {
-            totals[i] = results.get(i).totalProcessingSeconds;
-            detectionToExtinguishmentAverages[i] = results.get(i).averageDetectionToExtinguishmentSeconds;
-        }
-
-        double mean = calculateSampleMean(totals);
-        double sampleStandardDeviation = calculateSampleStandardDeviation(totals, mean);
-        double[] confidenceInterval = calculateConfidenceInterval(
-                mean,
-                sampleStandardDeviation,
-                results.size(),
-                T_CRITICAL_95_DF_29);
-        double meanDetectionToExtinguishment = calculateSampleMean(detectionToExtinguishmentAverages);
-
-        System.out.println();
-        System.out.printf("Sample Mean Total Processing Time: %.3fs%n", mean);
-        System.out.printf("Sample Standard Deviation: %.3fs%n", sampleStandardDeviation);
-        System.out.printf("95%% Confidence Interval: [%.3fs, %.3fs]%n",
-                confidenceInterval[0],
-                confidenceInterval[1]);
-        System.out.printf("Sample Mean Detection-to-Extinguishment Time: %.3fs%n",
-                meanDetectionToExtinguishment);
-    }
-
-    /**
-     * This computes the arithmetic mean used by the sample statistics summary.
-     * It is package-private so the JUnit math test can validate the rubric calculation
-     * directly without starting the simulation threads.
-     */
-    static double calculateSampleMean(double[] values) {
-        double total = 0.0;
-        for (double value : values) {
-            total += value;
-        }
-        return values.length == 0 ? 0.0 : total / values.length;
-    }
-
-    /**
-     * This computes the sample standard deviation using the n-1 denominator required by the rubric.
-     * It is package-private so the JUnit math test can validate the calculation in isolation.
-     */
-    static double calculateSampleStandardDeviation(double[] values, double mean) {
-        if (values.length <= 1) {
-            return 0.0;
-        }
-
-        double squaredDifferenceTotal = 0.0;
-        for (double value : values) {
-            double difference = value - mean;
-            squaredDifferenceTotal += difference * difference;
-        }
-        return Math.sqrt(squaredDifferenceTotal / (values.length - 1));
-    }
-
-    /**
-     * This computes the confidence-interval bounds for a sample mean using whichever
-     * critical value the caller provides.
-     */
-    static double[] calculateConfidenceInterval(double mean, double sampleStandardDeviation,
-            int sampleSize, double criticalValue) {
-        if (sampleSize <= 0) {
-            throw new IllegalArgumentException("sampleSize must be positive.");
-        }
-
-        double halfWidth = criticalValue * sampleStandardDeviation / Math.sqrt(sampleSize);
-        return new double[] { mean - halfWidth, mean + halfWidth };
     }
 
     /**

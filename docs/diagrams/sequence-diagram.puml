@@ -2,7 +2,7 @@
 autonumber
 hide footbox
 
-participant "MetricsRunner\n(headless batch)" as MetricsRunner
+participant "MetricsRunner\n(headless metrics run)" as MetricsRunner
 participant "Fire Incident\nSubsystem" as Fire
 participant "SchedulerMain\n(UDP adapter)" as SchedulerMain
 participant "Scheduler\n(core)" as Scheduler
@@ -19,26 +19,23 @@ note right of Scheduler
 end note
 
 note over MetricsRunner,Scheduler
-  MetricsRunner runs the in-process grading pass:
+  MetricsRunner runs one in-process headless metrics pass:
   it resets Drone/Mission ids, starts the scheduler,
-  fire subsystem, and drone threads, loops 30 times,
-  waits on waitUntilQuiescent(), then prints
-  computeSampleMean(), computeSampleStandardDeviation(),
-  and the 95% confidence interval.
-  The detailed flow below shows one representative run.
+  fire subsystem, and drone threads, waits on
+  waitUntilQuiescent(), then prints the four
+  Iteration 5 timing metrics from RunResult.
 end note
 
 == Metrics Harness ==
-loop runNumber = 1..30
-  MetricsRunner -> Scheduler : start metrics-scheduler-run thread
-  MetricsRunner -> Drone : start metrics-drone-run-1 thread
-  MetricsRunner -> Drone2 : start metrics-drone-run-2..N thread(s)
-  MetricsRunner -> Fire : start metrics-fire-run thread
-  Fire --> MetricsRunner : fire thread joined
-  MetricsRunner -> Scheduler : waitUntilQuiescent()
-  MetricsRunner -> Drone : getIdleSeconds() / getFlightSeconds()\nfor each DroneSubsystem
-end
-MetricsRunner -> MetricsRunner : printSummary()\ncomputeSampleMean()\ncomputeSampleStandardDeviation()\n95% confidence interval
+MetricsRunner -> Scheduler : start metrics-scheduler-1 thread
+MetricsRunner -> Drone : start metrics-drone-1-1 thread
+MetricsRunner -> Drone2 : start metrics-drone-1-2..N thread(s)
+MetricsRunner -> Fire : start metrics-fire-1 thread
+Fire --> MetricsRunner : fire thread joined
+MetricsRunner -> Scheduler : waitUntilQuiescent()
+MetricsRunner -> Drone : getIdleSeconds() / getFlightSeconds()\nfor each DroneSubsystem
+MetricsRunner -> Fire : getAverageDetectionToExtinguishmentSeconds()
+MetricsRunner -> MetricsRunner : print single-run Iteration 5 metrics
 
 == Incident Input ==
 Fire -> SchedulerMain : UDP REQ|time|zone|type|severity|faultType|faultTriggerSeconds

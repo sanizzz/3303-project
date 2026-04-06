@@ -11,18 +11,18 @@ package "Application" {
   }
 
   class MetricsRunner {
-    -{static} RUN_COUNT : int
     -{static} FLEET_SIZE : int
     -{static} DEFAULT_TIME_SCALE : int
     -{static} DEFAULT_CAPACITY_LITERS : double
-    -{static} T_CRITICAL_95_DF_29 : double
     +{static} main(args : String[]) : void
     -{static} executeSingleRun(runNumber : int, zoneCsv : String,\neventCsv : String, timeScale : int, capacity : double) : RunResult
+    -{static} shutdownThread(thread : Thread, role : String) : void
     -{static} averageIdleSeconds(droneSubsystems : List<DroneSubsystem>) : double
     -{static} averageFlightSeconds(droneSubsystems : List<DroneSubsystem>) : double
-    -{static} printSummary(results : List<RunResult>) : void
-    -{static} computeSampleMean(values : double[]) : double
-    -{static} computeSampleStandardDeviation(values : double[], mean : double) : double
+    -{static} nanosToSeconds(nanos : long) : double
+    -{static} getArg(args : String[], key : String, defaultValue : String) : String
+    -{static} parseIntArg(args : String[], key : String, defaultValue : int) : int
+    -{static} parseDoubleArg(args : String[], key : String, defaultValue : double) : double
   }
 
   class "MetricsRunner.RunResult" as RunResult {
@@ -30,6 +30,7 @@ package "Application" {
     -totalProcessingSeconds : double
     -averageIdleSeconds : double
     -averageFlightSeconds : double
+    -averageDetectionToExtinguishmentSeconds : double
   }
 }
 
