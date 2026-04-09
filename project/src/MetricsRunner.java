@@ -14,7 +14,7 @@ import java.util.Map;
  */
 public class MetricsRunner {
 
-    private static final int FLEET_SIZE = 10;
+    private static final int FLEET_SIZE = 3;
     private static final int DEFAULT_TIME_SCALE = 200;
     private static final double DEFAULT_CAPACITY_LITERS = 15.0;
 
@@ -23,10 +23,14 @@ public class MetricsRunner {
      */
     public static void main(String[] args) throws Exception {
         String zoneCsv = getArg(args, "--zoneCsv", Main.resolveExistingPath(
+                "project/sampleData/Final_zone_file_w26.csv",
+                "sampleData/Final_zone_file_w26.csv",
                 "project/sampleData/sample_zone_file.csv",
                 "sampleData/sample_zone_file.csv",
                 "out/production/3303 project/sample_zone_file.csv"));
         String eventCsv = getArg(args, "--eventCsv", Main.resolveExistingPath(
+                "project/sampleData/Final_event_file_w26.csv",
+                "sampleData/Final_event_file_w26.csv",
                 "project/sampleData/test_mixed_scenario.csv",
                 "sampleData/test_mixed_scenario.csv",
                 "out/production/3303 project/test_mixed_scenario.csv"));
